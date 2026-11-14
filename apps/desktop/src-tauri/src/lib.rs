@@ -12,6 +12,7 @@ pub mod compare;
 pub mod crash_reports;
 pub mod events;
 pub mod mcp_tool;
+pub mod paths;
 pub mod project;
 pub mod punch;
 pub mod reclaimer;
@@ -46,15 +47,15 @@ use crate::commands::{
     upsert_agent_profile, upsert_mcp_server, upsert_skill, write_memory, RecorderState,
 };
 use crate::state::AppState;
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    Emitter, Manager,
-};
+#[cfg(desktop)]
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::{Emitter, Manager};
 
 /// Event name the frontend listens for when the user picks `File > Open
 /// Audio…` from the native menu. The webview's own dialog button uses
 /// the same flow client-side, so this event keeps the menu and toolbar
-/// behavioural parity in one place.
+/// behavioural parity in one place. Desktop only: Android has no menu bar.
+#[cfg(desktop)]
 const MENU_OPEN_FILE_EVENT: &str = "menu://open-file";
 
 /// Register the directory the installer puts the ONNX Runtime library in,
@@ -332,64 +333,69 @@ pub fn run() {
             // rebuilt it. Its own thread, because verifying takes replays.
             crate::reclaimer::spawn(app_state.clone());
 
-            // Native menu: File > Open Audio… / Quit. Frontend listens
-            // for `menu://open-file` and runs the dialog open + load
-            // path; Quit uses tauri's built-in close behaviour.
-            let open_audio = MenuItemBuilder::with_id("open_audio", "Open Audio…")
-                .accelerator("CmdOrCtrl+O")
-                .build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit")
-                .accelerator("CmdOrCtrl+Q")
-                .build(app)?;
-            let file_menu = SubmenuBuilder::new(app, "File")
-                .item(&open_audio)
-                .separator()
-                .item(&quit)
-                .build()?;
+            // Desktop only: `tauri::menu` and `set_menu` do not exist on mobile,
+            // where the toolbar buttons do this work.
+            #[cfg(desktop)]
+            {
+                // Native menu: File > Open Audio… / Quit. Frontend listens
+                // for `menu://open-file` and runs the dialog open + load
+                // path; Quit uses tauri's built-in close behaviour.
+                let open_audio = MenuItemBuilder::with_id("open_audio", "Open Audio…")
+                    .accelerator("CmdOrCtrl+O")
+                    .build(app)?;
+                let quit = MenuItemBuilder::with_id("quit", "Quit")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let file_menu = SubmenuBuilder::new(app, "File")
+                    .item(&open_audio)
+                    .separator()
+                    .item(&quit)
+                    .build()?;
 
-            // Cut / Copy / Paste / Select All / Undo have to be real
-            // menu items or they do not work at all.
-            //
-            // On macOS those shortcuts are not handled by the webview.
-            // They are dispatched through the responder chain by the
-            // Edit menu's *key equivalents*, so an application with no
-            // Edit menu has no ⌘V — the keystroke reaches nothing and
-            // is silently dropped.
-            //
-            // Tauri's default menu includes this submenu. Building a
-            // menu from scratch with `MenuBuilder::new` and calling
-            // `set_menu` replaces that default wholesale, so adding a
-            // File menu had the side effect of deleting Edit — and with
-            // it, pasting into every text field in the app: the chat
-            // box, the API key and base URL fields, the model picker,
-            // the graph's rename overlay, the label lane.
-            //
-            // Nothing about the failure points at the menu bar, which
-            // is why it survived: the field just ignores ⌘V.
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .undo()
-                .redo()
-                .separator()
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
+                // Cut / Copy / Paste / Select All / Undo have to be real
+                // menu items or they do not work at all.
+                //
+                // On macOS those shortcuts are not handled by the webview.
+                // They are dispatched through the responder chain by the
+                // Edit menu's *key equivalents*, so an application with no
+                // Edit menu has no ⌘V — the keystroke reaches nothing and
+                // is silently dropped.
+                //
+                // Tauri's default menu includes this submenu. Building a
+                // menu from scratch with `MenuBuilder::new` and calling
+                // `set_menu` replaces that default wholesale, so adding a
+                // File menu had the side effect of deleting Edit — and with
+                // it, pasting into every text field in the app: the chat
+                // box, the API key and base URL fields, the model picker,
+                // the graph's rename overlay, the label lane.
+                //
+                // Nothing about the failure points at the menu bar, which
+                // is why it survived: the field just ignores ⌘V.
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
 
-            let menu = MenuBuilder::new(app)
-                .item(&file_menu)
-                .item(&edit_menu)
-                .build()?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app_handle, event| match event.id().as_ref() {
-                "open_audio" => {
-                    let _ = app_handle.emit(MENU_OPEN_FILE_EVENT, ());
-                }
-                "quit" => {
-                    app_handle.exit(0);
-                }
-                _ => {}
-            });
+                let menu = MenuBuilder::new(app)
+                    .item(&file_menu)
+                    .item(&edit_menu)
+                    .build()?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app_handle, event| match event.id().as_ref() {
+                    "open_audio" => {
+                        let _ = app_handle.emit(MENU_OPEN_FILE_EVENT, ());
+                    }
+                    "quit" => {
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -540,7 +546,7 @@ fn register_keychain_settings_dir<R: tauri::Runtime>(app: &tauri::App<R>) {
 /// Windows and through sandbox wrappers; falls back to the OS app
 /// data dir on the rare platform where `home_dir()` is unavailable.
 fn resolve_global_memory_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("memory.md");
     }
     app.path()
@@ -552,7 +558,7 @@ fn resolve_global_memory_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::pa
 
 /// Resolve `~/.edytlab/skills/`. Same fallback as the memory path.
 fn resolve_global_skills_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("skills");
     }
     app.path()
@@ -564,7 +570,7 @@ fn resolve_global_skills_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::pat
 
 /// Resolve `~/.edytlab/agents/`. Same fallback strategy.
 fn resolve_global_agent_profiles_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("agents");
     }
     app.path()
@@ -576,7 +582,7 @@ fn resolve_global_agent_profiles_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> 
 
 /// Resolve `~/.edytlab/settings.json`. Same fallback strategy.
 fn resolve_global_settings_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join(settings::SETTINGS_FILE);
     }
     app.path()
@@ -588,7 +594,7 @@ fn resolve_global_settings_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::
 
 /// Resolve `~/.edytlab/mcp.json`. Same fallback strategy.
 fn resolve_global_mcp_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("mcp.json");
     }
     app.path()

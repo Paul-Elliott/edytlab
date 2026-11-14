@@ -7329,17 +7329,17 @@ pub fn install_bundled_skills(app: tauri::AppHandle) -> CmdResult<usize> {
 // ---------------------------------------------------------------------------
 
 fn edytlab_skills_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = match app.path().home_dir() {
-        Ok(home) => home,
-        Err(_) => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    let base = match crate::paths::home_base(app) {
+        Some(home) => home,
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
     };
     Ok(base.join(".edytlab").join("skills"))
 }
 
 fn edytlab_agents_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = match app.path().home_dir() {
-        Ok(home) => home,
-        Err(_) => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    let base = match crate::paths::home_base(app) {
+        Some(home) => home,
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
     };
     Ok(base.join(".edytlab").join("agents"))
 }
