@@ -5,6 +5,7 @@
 //! Anthropic API key or to open a project. The agent is constructed
 //! lazily once both have been provided.
 
+pub mod android;
 pub mod bundled_skills;
 pub mod chatgpt;
 pub mod commands;
@@ -16,6 +17,7 @@ pub mod paths;
 pub mod project;
 pub mod punch;
 pub mod reclaimer;
+pub mod resources;
 pub mod settings;
 pub mod state;
 pub mod window_mix;
@@ -134,8 +136,12 @@ pub fn run() {
     // as long as the user does (#497).
     app_state.begin_startup_reads();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // The Kotlin half of the Android app (`android.rs`): the picker's
+    // files, the share sheet, the microphone permission.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(crate::android::init());
+    builder
         .manage(app_state.clone())
         .manage(RecorderState(std::sync::Mutex::new(None)))
         .setup(move |app| {
@@ -160,6 +166,15 @@ pub fn run() {
                 if let Ok(dir) = dir {
                     app_state.crash_reports.redact_path(&dir, replacement);
                 }
+            }
+
+            // Android keeps the bundled files as package assets, which have
+            // no path: write them to the app's storage before anything asks
+            // for a template, a bundled skill or the notices.
+            #[cfg(target_os = "android")]
+            {
+                crate::resources::prepare(app);
+                crate::android::prepare_storage(app);
             }
 
             // Tell the ONNX Runtime loader where the installer puts the
@@ -401,6 +416,16 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_project,
             batch_load,
+            crate::android::device_info,
+            crate::android::list_managed_projects,
+            crate::android::create_managed_project,
+            crate::android::delete_managed_project,
+            crate::android::import_audio,
+            crate::android::export_destination,
+            crate::android::list_exports,
+            crate::android::delete_export,
+            crate::android::share_export,
+            crate::android::save_export_to,
             send_message,
             set_api_key,
             set_api_key_for,

@@ -368,7 +368,7 @@ fn edytlab_home() -> PathBuf {
 }
 
 /// The project currently open, or an error naming what to do instead.
-fn current_project_dir(state: &AppState) -> Result<PathBuf, CommandError> {
+pub(crate) fn current_project_dir(state: &AppState) -> Result<PathBuf, CommandError> {
     let dir = lock_std(&state.project_dir, "project_dir")?;
     dir.clone().ok_or(CommandError::NoSession)
 }
@@ -1708,7 +1708,7 @@ const THIRD_PARTY_NOTICES_RESOURCE: &str = "licenses/THIRD_PARTY_NOTICES.txt";
 /// so it runs on the blocking pool.
 #[tauri::command]
 pub async fn third_party_notices(app: tauri::AppHandle) -> CmdResult<String> {
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let resource_dir = crate::resources::root(&app)?;
     tauri::async_runtime::spawn_blocking(move || read_third_party_notices(&resource_dir))
         .await
         .map_err(|e| CommandError::TaskFailed(e.to_string()).to_string())?
@@ -5330,10 +5330,8 @@ pub struct TemplateInfo {
 
 #[tauri::command]
 pub async fn list_templates(app_handle: tauri::AppHandle) -> CmdResult<Vec<TemplateInfo>> {
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource dir: {e}"))?;
+    let resource_dir =
+        crate::resources::root(&app_handle).map_err(|e| format!("resource dir: {e}"))?;
     let templates_dir = resource_dir.join("templates");
     // Reads every bundled template file: file work, and it takes no lock,
     // so it runs on the blocking pool.
@@ -5383,10 +5381,8 @@ fn apply_template_inner(
     app_handle: &tauri::AppHandle,
     name: String,
 ) -> CmdResult<String> {
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource dir: {e}"))?;
+    let resource_dir =
+        crate::resources::root(app_handle).map_err(|e| format!("resource dir: {e}"))?;
     let templates_dir = resource_dir.join("templates");
     let entries = std::fs::read_dir(&templates_dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
@@ -6041,7 +6037,9 @@ fn rebuild_agent_from(
                 None => agent,
             };
             let agent = agent.with_skills(state.skills_handle());
-            let agent = match profile_body {
+            // On Android the model is also told where exports go and that
+            // there are no paths to ask for (`android.rs`).
+            let agent = match crate::android::with_platform_note(profile_body) {
                 Some(body) => agent.with_profile_body(body),
                 None => agent,
             };
@@ -7300,7 +7298,7 @@ pub fn stop_recording(
 /// without a restart.
 #[tauri::command]
 pub fn install_bundled_skills(app: tauri::AppHandle) -> CmdResult<usize> {
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let resource_dir = crate::resources::root(&app)?;
     let bundled_dir = resource_dir.join("bundled-skills");
     let skills_dir = edytlab_skills_dir(&app)?;
 
