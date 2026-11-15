@@ -935,6 +935,11 @@ mod tests {
 
     /// Off Android there is no Keystore to ask, and the store says so. It
     /// never answers "nothing saved" or "saved" for a call it could not make.
+    ///
+    /// Not built on Windows: a test binary that makes a Tauri app does not
+    /// load on the CI runner there (`tests/commands_mock.rs` has the reason),
+    /// and this is the only test in the library's own binary that makes one.
+    #[cfg(not(target_os = "windows"))]
     #[test]
     fn the_keystore_store_is_an_error_everywhere_but_android() {
         use ai::keychain::SecretStore as _;
