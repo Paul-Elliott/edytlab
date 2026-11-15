@@ -84,6 +84,44 @@ use crate::tool_selection::is_not_implemented;
 use crate::{context_window, tool_selection};
 use crate::{AgentEvent, Effort, Error, LlmConfig, Result, TurnResult, WireFormat};
 
+/// The longest the loop waits for the provider to say anything: for the
+/// response to a request to start, and then between two pieces of its
+/// stream. `None` waits for as long as it takes.
+///
+/// Set for the Android app. A phone changes network (Wi-Fi to mobile and
+/// back) and its apps are frozen while out of sight, and either can leave a
+/// connection that is dead with nothing to say so: no error, no end of
+/// stream. The read then never returns. The turn never ends, it keeps the
+/// agent, and the next message waits behind it with nothing on screen: the
+/// chat looked frozen. With a limit the turn ends in an error the person
+/// can answer by sending again.
+///
+/// Long enough for a model that thinks before it writes: providers send
+/// keep-alives or tokens well inside it. A desktop keeps the old behaviour,
+/// where a silent wait has always been allowed.
+pub(crate) const STREAM_IDLE_LIMIT: Option<std::time::Duration> = if cfg!(target_os = "android") {
+    Some(std::time::Duration::from_secs(150))
+} else {
+    None
+};
+
+/// `wait`, given up on after `limit` if there is one.
+pub(crate) async fn within<T>(
+    limit: Option<std::time::Duration>,
+    wait: impl std::future::Future<Output = T>,
+) -> Result<T> {
+    match limit {
+        None => Ok(wait.await),
+        Some(limit) => tokio::time::timeout(limit, wait).await.map_err(|_| {
+            Error::ApiStream(format!(
+                "nothing arrived for {} seconds, so the connection was probably lost. \
+                 Send the message again.",
+                limit.as_secs()
+            ))
+        }),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Mode detection (M27)
 // ---------------------------------------------------------------------------
@@ -1120,7 +1158,7 @@ where
         // pass `MessagesRequest` through verbatim; OpenAI translates to
         // chat-completions JSON.
         let request_body = cfg.provider.serialize_request(&request_struct);
-        let resp = cfg.post_json(http, &request_body).await?;
+        let resp = within(STREAM_IDLE_LIMIT, cfg.post_json(http, &request_body)).await??;
 
         if !resp.status().is_success() {
             let status = resp.status();
@@ -1250,7 +1288,10 @@ where
         // event sequence so we can break out of the SSE loop cleanly.
         let mut stream_finished = false;
 
-        while let Some(ev) = sse.next().await {
+        // Each wait for the stream has a limit where one is set
+        // ([`STREAM_IDLE_LIMIT`]): a connection that died without a word
+        // would otherwise hold the turn, and the agent with it, for ever.
+        while let Some(ev) = within(STREAM_IDLE_LIMIT, sse.next()).await? {
             let event = ev.map_err(Error::Sse)?;
             // `eventsource-stream` skips comment lines and reassembles
             // multi-line `data:` payloads automatically. An empty data
@@ -2064,6 +2105,35 @@ mod tests {
     use super::*;
     use serde_json::json;
     use tools::ToolContext;
+
+    /// A wait with a limit ends in an error once the limit has passed, and
+    /// one without waits. What arrives in time is passed through.
+    #[tokio::test(start_paused = true)]
+    async fn a_silent_wait_ends_at_its_limit_and_only_where_one_is_set() {
+        let limit = Some(std::time::Duration::from_secs(150));
+        let silent = std::future::pending::<u8>();
+        let error = within(limit, silent).await.expect_err("it must give up");
+        let text = error.to_string();
+        assert!(
+            text.contains("150 seconds") && text.contains("Send the message again"),
+            "{text}"
+        );
+
+        let late = async {
+            tokio::time::sleep(std::time::Duration::from_secs(149)).await;
+            7u8
+        };
+        assert_eq!(within(limit, late).await.unwrap(), 7);
+
+        // No limit: an hour of silence is still waited out.
+        let hour = async {
+            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+            9u8
+        };
+        assert_eq!(within(None, hour).await.unwrap(), 9);
+        // A desktop has none; the Android app has one.
+        assert_eq!(STREAM_IDLE_LIMIT.is_some(), cfg!(target_os = "android"));
+    }
 
     // ------------------------------------------------------------------
     // parse_plan

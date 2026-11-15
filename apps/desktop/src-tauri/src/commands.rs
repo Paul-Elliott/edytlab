@@ -3944,6 +3944,10 @@ pub async fn send_message<R: Runtime>(
     let generation = state.chatgpt.account_generation();
     let kept_text = text.clone();
     let history_before = agent.conversation().len();
+    // The request is saved before the turn where conversations are kept (the
+    // Android app): a turn the system stops the app in the middle of still
+    // leaves what was asked.
+    crate::chat_log::keep_request(&state, agent, &text);
 
     let turn_result = agent
         .turn_with_context(text, session_ctx.as_ref(), on_event)
@@ -11219,7 +11223,19 @@ mod tests {
             "left as it was"
         );
 
-        // Kept: the finished exchange comes back, and the folder is noted.
+        // Kept: the finished exchange comes back with the request the app
+        // was stopped on, and the folder is noted.
+        crate::chat_log::give_back_where(true, &state, agent, Some(project.clone()));
+        assert_eq!(agent.conversation().len(), 3);
+        // A turn that starts is saved with its request before it runs.
+        crate::chat_log::keep_request_where(true, &state, agent, "continue");
+        let on_disk = crate::chat_log::read_agent(&project);
+        assert_eq!(on_disk.len(), 3, "joined onto the request that was waiting");
+        assert!(matches!(
+            &on_disk[2].content[0],
+            ContentBlock::Text { text } if text == "it is there now, try again\n\ncontinue"
+        ));
+        crate::chat_log::write_agent(&project, &saved[..2]).unwrap();
         crate::chat_log::give_back_where(true, &state, agent, Some(project.clone()));
         assert_eq!(agent.conversation().len(), 2);
         assert_eq!(state.agent_chat_dir(), Some(project.clone()));

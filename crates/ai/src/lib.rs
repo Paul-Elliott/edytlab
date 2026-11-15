@@ -729,6 +729,13 @@ impl Agent {
         self.conversation.to_keep()
     }
 
+    /// [`Agent::conversation_to_keep`] as it will stand once `text` has been
+    /// sent. Saved as a turn starts, so a turn that never ends (the app was
+    /// stopped) still leaves the request for the next agent to read.
+    pub fn conversation_to_keep_with(&self, text: &str) -> Vec<Message> {
+        self.conversation.to_keep_with(text)
+    }
+
     /// Replace the conversation with one saved earlier, and say how many of
     /// its messages were taken. Only a history that is safe to send again is
     /// kept: a turn that was cut off, anything malformed and the oldest
