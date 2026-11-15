@@ -19,7 +19,10 @@ use ml_demucs::separate::{SegmentModel, Stereo, MODEL_SOURCES};
 use ml_demucs::{Control, DemucsError, Separated};
 use serde_json::{json, Value};
 use session::audio_store::{AudioFolder, AudioName};
-use tools::tool::separate_stems::{answer, ModelRef, SeparateStemsTool, StemFailure, StemModel};
+use tools::tool::separate_stems::{
+    answer, too_small_for_stems, total_memory_bytes, ModelRef, SeparateStemsTool, StemFailure,
+    StemModel, ANDROID_MIN_TOTAL_RAM_BYTES,
+};
 
 #[path = "support/harness.rs"]
 mod harness;
@@ -407,6 +410,8 @@ fn every_setup_problem_tells_the_agent_to_stop_and_names_no_path() {
 fn a_failed_run_says_why_and_leaves_no_entry() {
     for (failure, wanted) in [
         (StemFailure::OutOfMemory, "memory"),
+        // An Android device under the floor, refused before the model loads.
+        (StemFailure::DeviceTooSmall(5_800_000_000), "5.8 GB"),
         (
             StemFailure::Failed("the network returned the wrong shape".into()),
             "wrong shape",
@@ -615,4 +620,29 @@ fn the_tool_is_held_for_approval_and_runs_off_the_lock() {
     let t = SeparateStemsTool::with(Arc::new(Fake::new()));
     assert!(t.mutates());
     assert!(t.runs_off_the_lock());
+}
+
+/// The Android memory floor (`ANDROID_MIN_TOTAL_RAM_BYTES`): read from the
+/// kernel's own words, and set so a phone sold as 8 GB runs and one sold as
+/// 6 GB is refused before the model is loaded.
+#[test]
+fn the_android_memory_floor_passes_an_8_gb_phone_and_refuses_a_6_gb_one() {
+    let meminfo = |kb: u64| {
+        format!(
+            "MemTotal:       {kb} kB\nMemFree:          123456 kB\nMemAvailable:    2345678 kB\n"
+        )
+    };
+    // What a Pixel 8 (8 GB) and a Pixel 6a (6 GB) report.
+    let eight = total_memory_bytes(&meminfo(7_652_340)).unwrap();
+    let six = total_memory_bytes(&meminfo(5_764_928)).unwrap();
+    assert_eq!(eight, 7_652_340 * 1024);
+    assert!(!too_small_for_stems(eight));
+    assert!(too_small_for_stems(six));
+    assert!(!too_small_for_stems(ANDROID_MIN_TOTAL_RAM_BYTES));
+
+    // Text that is not the kernel's refuses nothing: unknown is not small.
+    assert_eq!(total_memory_bytes(""), None);
+    assert_eq!(total_memory_bytes("MemTotal: lots kB"), None);
+    assert_eq!(total_memory_bytes("MemTotal: 7652340 MB"), None);
+    assert_eq!(total_memory_bytes("MemFree: 7652340 kB"), None);
 }

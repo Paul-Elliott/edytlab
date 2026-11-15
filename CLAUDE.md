@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+> **This repository is a fork** (`Paul-Elliott/edytlab`) of `laadtushar/edytlab` that adds an Android build. The sections below were written for the upstream repository and its owner. In this fork:
+>
+> - **Do not merge pull requests.** Open them as drafts and leave merging to the fork's owner. The upstream rule to squash-merge a green PR does not apply here.
+> - The upstream tracking issue (#366), release day steps, advisory bots, site and marketing sweeps describe upstream's process, not this fork's. Skip them unless asked.
+> - Upstream's desktop workflows are expected to be disabled in this fork. The fork's own check is the `Android` workflow (`.github/workflows/android.yml`).
+> - The code conventions, area guides and acceptance gates still apply. The Android work has its own guide: `docs/agents/android.md`.
+
 Project-level instructions for Claude Code sessions in this repository. These persist across sessions; treat them as durable user preferences. This file holds what every task needs; each area's design notes and rules are in a guide under `docs/agents/` (index below).
 
 ## Workflow
@@ -91,6 +98,7 @@ Each guide in `docs/agents/` holds one area's design notes and rules. Read it be
 - Adding or changing an agent tool → `docs/agents/agent-tools.md`
 - Touching a workflow, a release, a dependency's notices, the ML workflow, the Mintlify docs, or whether a feature has shipped → `docs/agents/ci-release.md`
 - Touching `website/`, a demo or a video → `docs/agents/website.md`
+- Touching the Android build, `gen/android/`, `android.rs`, `EdytlabPlugin.kt`, `lib/platform.ts` or anything under `components/mobile/` → `docs/agents/android.md`
 
 ## Acceptance gates
 

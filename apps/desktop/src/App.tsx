@@ -118,6 +118,21 @@ import { type ViewToApply, viewToApply, viewToSave } from "./lib/viewState";
 import { readSavedTrail } from "./lib/headTrail";
 
 import type { LeftView } from "./lib/views";
+import { useFormFactor } from "./lib/platform";
+import { useBackButton } from "./hooks/useBackButton";
+import { pickAudioUris } from "./lib/file-open";
+import {
+  deviceInfo,
+  ensureMicrophone,
+  exportDestination,
+  importAudio,
+  type DeviceInfo,
+} from "./lib/tauri-bridge";
+import { MobileHeader } from "./components/mobile/MobileHeader";
+import { MobileTabBar, type PhonePane } from "./components/mobile/MobileTabBar";
+import { MenuSheet, type MenuItem } from "./components/mobile/MenuSheet";
+import { ProjectsSheet } from "./components/mobile/ProjectsSheet";
+import { ExportsSheet } from "./components/mobile/ExportsSheet";
 import { useHeadMove } from "./hooks/useHeadMove";
 import { useGraphPreview } from "./hooks/useGraphPreview";
 import { useRenderWarnings } from "./hooks/useRenderWarnings";
@@ -201,6 +216,47 @@ function AppSession() {
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState<string | null>(null);
   const [leftView, setLeftView] = useState<LeftView>("timeline");
+  // The Android app (`lib/platform.ts`). A tablet keeps the two panes; a
+  // phone shows one, chosen from the bar at the bottom, and starts on the
+  // chat because that is what drives the app.
+  const formFactor = useFormFactor();
+  const android = formFactor !== "desktop";
+  const phone = formFactor === "phone";
+  const [phonePane, setPhonePane] = useState<PhonePane>("chat");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [projectsOpen, setProjectsOpen] = useState(false);
+  const [exportsOpen, setExportsOpen] = useState(false);
+  /** Bumped when something may have been exported, so the list re-reads. */
+  const [exportsVersion, setExportsVersion] = useState(0);
+  /** The open project's folder, to mark its row in the Android list. */
+  const [projectPath, setProjectPath] = useState<string | null>(null);
+  /** The phone or tablet itself, for the menu's footer. Android only. */
+  const [device, setDevice] = useState<DeviceInfo | null>(null);
+  useEffect(() => {
+    if (!android) return undefined;
+    let cancelled = false;
+    deviceInfo()
+      .then((info) => {
+        if (!cancelled) setDevice(info);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [android]);
+  const selectPhonePane = useCallback((pane: PhonePane) => {
+    setPhonePane(pane);
+    if (pane !== "chat") setLeftView(pane);
+  }, []);
+  // The Android back button: dialogs first (the hook closes those), then a
+  // phone's way back to the chat, then out of the app.
+  useBackButton(android, () => {
+    if (phone && phonePane !== "chat") {
+      setPhonePane("chat");
+      return true;
+    }
+    return false;
+  });
   const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
   // Whether the launch-time `has_api_key` is still pending. It is while
   // the backend reads the keychain, which can be as long as a locked
@@ -732,14 +788,49 @@ function AppSession() {
     [loadInOrder],
   );
 
+  /**
+   * The Android way in. The system picker answers `content://` addresses,
+   * not paths, so the backend copies each file into the project before
+   * loading it (`import_audio`). Everything after that is `loadFiles`: one
+   * track per file, a refused file named, nothing drawn until it is real.
+   */
+  const importFromPicker = useCallback(
+    async (uris: string[]) => {
+      if (uris.length === 0) return;
+      try {
+        const result = await inOrder(async () => {
+          const loaded = await importAudio(uris);
+          if (loaded.tracks_loaded > 0) applyNewHead(loaded.last_node_id);
+          return loaded;
+        });
+        if (result.tracks_loaded > 0) {
+          await refreshTracks();
+          // The tracks arrive on the timeline; on a phone that is another pane.
+          setPhonePane("timeline");
+          setLeftView("timeline");
+        }
+        setRenderError(describeLoadFailures(result.failures));
+      } catch (err) {
+        const what = uris.length === 1 ? "the file" : `${uris.length} files`;
+        setRenderError(`Could not import ${what}: ${String(err)}`);
+      }
+    },
+    [inOrder, applyNewHead],
+  );
+
   const handleOpenDialog = useCallback(async () => {
     try {
+      if (android) {
+        const uris = await pickAudioUris();
+        if (uris) await importFromPicker(uris);
+        return;
+      }
       const paths = await pickAudioFiles(true);
       if (paths) await loadFiles(paths);
     } catch (err) {
       setRenderError(String(err));
     }
-  }, [loadFiles]);
+  }, [loadFiles, android, importFromPicker]);
 
   useEffect(() => {
     void listTemplates().then(setTemplates).catch(console.error);
@@ -1027,6 +1118,7 @@ function AppSession() {
         // left, and one made after it to the project being opened (#498).
         await inOrder(async () => {
           const info = await openProject(path);
+          setProjectPath(info.path);
           projectGenerationRef.current += 1;
           // Whatever the last project had on screen is not this one's. A
           // rendered mix outlives a project change otherwise.
@@ -1094,6 +1186,11 @@ function AppSession() {
    * created a project as a side effect and never said so.
    */
   const handleOpenProject = useCallback(async () => {
+    // Android has no folder picker: projects are chosen from a list.
+    if (android) {
+      setProjectsOpen(true);
+      return;
+    }
     try {
       const dir = await pickProjectDirectory();
       if (!dir) return;
@@ -1101,7 +1198,7 @@ function AppSession() {
     } catch (e) {
       setRenderError(String(e));
     }
-  }, [handleOpenRecent]);
+  }, [handleOpenRecent, android]);
 
   /**
    * Start a new project.
@@ -1117,6 +1214,10 @@ function AppSession() {
    * between.
    */
   const handleNewProject = useCallback(async () => {
+    if (android) {
+      setProjectsOpen(true);
+      return;
+    }
     try {
       const dir = await pickProjectDirectory();
       if (!dir) return;
@@ -1124,7 +1225,7 @@ function AppSession() {
     } catch (e) {
       setRenderError(String(e));
     }
-  }, [handleOpenRecent]);
+  }, [handleOpenRecent, android]);
 
   /**
    * Save As: copy the project somewhere new and carry on there.
@@ -1133,10 +1234,13 @@ function AppSession() {
    * last change, and a copy taken inside that window would land at a
    * different scroll position than the one being left behind.
    */
-  const handleSaveProjectAs = useCallback(async () => {
-    try {
-      const dir = await pickProjectDirectory();
-      if (!dir) return;
+  /**
+   * The copy itself, into the empty folder `dir`. Save As picks the folder
+   * on a desktop; on Android the projects sheet makes one from a name.
+   * Throws, so each caller reports the failure where the person is looking.
+   */
+  const saveProjectInto = useCallback(
+    async (dir: string) => {
       persistView();
       // In line: it moves the session to the copy, as opening does (#498).
       const report = await inOrder(async () => {
@@ -1144,6 +1248,7 @@ function AppSession() {
         projectGenerationRef.current += 1;
         return saved;
       });
+      setProjectPath(dir);
       setRecents(await listRecentProjects());
       await refreshTracks();
       // Not an error, so it does not go through the error banner — but
@@ -1156,10 +1261,23 @@ function AppSession() {
           `${(report.bytes / 1e6).toFixed(1)} MB, ` +
           `${report.skipped_cache_files} cached preview and audition file(s) left behind.`,
       );
+    },
+    [persistView, inOrder],
+  );
+
+  const handleSaveProjectAs = useCallback(async () => {
+    if (android) {
+      setProjectsOpen(true);
+      return;
+    }
+    try {
+      const dir = await pickProjectDirectory();
+      if (!dir) return;
+      await saveProjectInto(dir);
     } catch (e) {
       setRenderError(String(e));
     }
-  }, [persistView, inOrder]);
+  }, [saveProjectInto, android]);
 
   /** Forget the row, not the project. */
   const handleForgetRecent = useCallback(async (path: string) => {
@@ -1431,22 +1549,30 @@ function AppSession() {
     setRenderError(null);
     setExportedWithout(null);
     try {
-      const outPath = await save({
-        title: "Export Selection",
-        filters: [{ name: "WAV", extensions: ["wav"] }],
-        defaultPath: "export.wav",
-      });
+      // Android has no path to ask for: the file goes to the app's exports
+      // folder, and the Exports sheet opens on it to share or save.
+      const outPath = android
+        ? await exportDestination("selection.wav")
+        : await save({
+            title: "Export Selection",
+            filters: [{ name: "WAV", extensions: ["wav"] }],
+            defaultPath: "export.wav",
+          });
       if (!outPath) { setExporting(false); return; }
       const { warnings } = await renderRange(head, selection.start, selection.end, outPath);
       // The file is written either way; when it is missing something the
       // user stored, the one place they look for the result says so.
       if (warnings.length > 0) setExportedWithout({ file: trimPath(outPath), warnings });
+      if (android) {
+        setExportsVersion((v) => v + 1);
+        setExportsOpen(true);
+      }
     } catch (e) {
       setRenderError(String(e));
     } finally {
       setExporting(false);
     }
-  }, [head, selection, exporting]);
+  }, [head, selection, exporting, android]);
 
   // Recording was the only pair of handlers reporting to the console
   // (#248). Every other one routes to the error banner, which is the
@@ -1458,13 +1584,28 @@ function AppSession() {
   // what stays here is the mapping onto state.
   const handleStartRecording = useCallback(async () => {
     setRenderError(null);
+    // Android asks the person for the microphone the first time, and the
+    // recorder cannot open it until they have said yes.
+    if (android) {
+      try {
+        if (!(await ensureMicrophone())) {
+          setRenderError(
+            "edytlab needs the microphone to record. Allow it for edytlab in Android's settings, then tap Record again.",
+          );
+          return;
+        }
+      } catch (e) {
+        setRenderError(`Could not ask for the microphone: ${String(e)}`);
+        return;
+      }
+    }
     const outcome = await startTake(startRecording);
     if (outcome.kind === "recording") {
       setIsRecording(true);
     } else {
       setRenderError(outcome.message);
     }
-  }, []);
+  }, [android]);
 
   const handleStopRecording = useCallback(async () => {
     setRenderError(null);
@@ -1783,101 +1924,161 @@ function AppSession() {
     };
   }, [renderError]);
 
+  // The Android menu: what the desktop spreads over its header and its
+  // keyboard shortcuts, as one list.
+  const mobileMenu: MenuItem[] = [
+    { id: "projects", label: "Projects", hint: "New, open, duplicate or delete", onSelect: () => setProjectsOpen(true) },
+    { id: "exports", label: "Exports", hint: "Share or save exported files", onSelect: () => setExportsOpen(true) },
+    { id: "templates", label: "Start from a template", onSelect: () => setShowTemplatePicker(true) },
+    { id: "commands", label: "Commands", hint: "Things to ask the assistant", onSelect: () => setPaletteOpen(true) },
+    { id: "settings", label: "Settings", onSelect: () => setSettingsOpen(true) },
+  ];
+
+  // What the app has to say above the work: errors, warnings, a long
+  // tool's progress, the A/B bar. In the left pane on a desktop and a
+  // tablet; above the panes on a phone, where the left pane may be hidden.
+  const notices = (
+    <>
+      <KeyringWaiting pending={keyCheckPending} />
+      {notice?.kind === "read-error" ? (
+        <ErrorBanner
+          testId="keychain-error"
+          message={notice.message}
+          action={{
+            label: "Open Settings",
+            onClick: () => setSettingsOpen(true),
+          }}
+          onDismiss={() => setKeychainError(null)}
+        />
+      ) : null}
+      {notice?.kind === "session-only" && !sessionOnlyDismissed ? (
+        <ErrorBanner
+          testId="keychain-session-only"
+          message={notice.message}
+          dismissLabel="Dismiss warning"
+          onDismiss={() => {
+            writeSessionOnlyDismissed(true);
+            setSessionOnlyDismissed(true);
+          }}
+        />
+      ) : null}
+      {renderError ? (
+        <ErrorBanner
+          testId="render-error"
+          message={renderError}
+          action={errorAction}
+          onDismiss={() => setRenderError(null)}
+        />
+      ) : null}
+      {punchNotice ? (
+        <ErrorBanner
+          tone="info"
+          testId="punch-notice"
+          message={punchNotice}
+          dismissLabel="Dismiss"
+          onDismiss={() => setPunchNotice(null)}
+        />
+      ) : null}
+      <RenderWarningsNotice notice={mixNotice(renderWarnings)} />
+      {exportedWithout ? (
+        <RenderWarningsNotice
+          testId="export-warnings"
+          notice={exportWarningNotice(exportedWithout.file, exportedWithout.warnings)}
+          onDismiss={() => setExportedWithout(null)}
+        />
+      ) : null}
+
+      {/* Above the timeline so a long run is visible wherever the
+          user is looking, and gone again the moment it finishes. */}
+      <ToolProgressBar />
+
+      {compareMode ? (
+        <ABCompareBar
+          aNodeId={compareMode.a}
+          bNodeId={compareMode.b}
+          onAudioPathChange={setMixPath}
+          acceptB={handleCompareAcceptB}
+          onAcceptB={handleAcceptB}
+          onClose={() => setCompareMode(null)}
+        />
+      ) : null}
+    </>
+  );
+
   return (
     // No entry animation on `<main>`, or on anything else above the
     // timeline: it is an ancestor of every WaveSurfer canvas, and an
     // animated ancestor re-composites them (docs/motion-audit.md).
-    <main className="grid h-screen w-screen grid-rows-[auto_1fr_auto] bg-[var(--bg)] text-[var(--text)]">
-      <AppHeader
-        leftView={leftView}
-        onSelectView={setLeftView}
-        onOpen={handleOpenDialog}
-        onSettings={() => setSettingsOpen(true)}
-        isRecording={isRecording}
-        onRecord={isRecording ? handleStopRecording : handleStartRecording}
-        onTimerRecord={handleTimerRecord}
-        punch={{
-          tracks,
-          selection,
-          punching,
-          timerArmed,
-          onPunch: handlePunch,
-          onOpenAudioSettings: () => {
-            setSettingsReveal("recording-latency");
-            setSettingsOpen(true);
-          },
-        }}
-        onSaveAs={handleSaveProjectAs}
-        hasProject={Boolean(head)}
-        onNewProject={handleNewProject}
-        onOpenProject={handleOpenProject}
-      />
+    <main
+      className={
+        phone
+          ? "app-shell flex h-screen w-screen flex-col bg-[var(--bg)] text-[var(--text)]"
+          : "app-shell grid h-screen w-screen grid-rows-[auto_1fr_auto] bg-[var(--bg)] text-[var(--text)]"
+      }
+    >
+      {android ? (
+        <MobileHeader
+          leftView={phone ? undefined : leftView}
+          onSelectView={phone ? undefined : setLeftView}
+          onImport={handleOpenDialog}
+          onUndo={handleUndo}
+          onRedo={handleRedo}
+          isRecording={isRecording}
+          onRecord={isRecording ? handleStopRecording : handleStartRecording}
+          recordDisabled={punching}
+          onMenu={() => setMenuOpen(true)}
+        />
+      ) : (
+        <AppHeader
+          leftView={leftView}
+          onSelectView={setLeftView}
+          onOpen={handleOpenDialog}
+          onSettings={() => setSettingsOpen(true)}
+          isRecording={isRecording}
+          onRecord={isRecording ? handleStopRecording : handleStartRecording}
+          onTimerRecord={handleTimerRecord}
+          punch={{
+            tracks,
+            selection,
+            punching,
+            timerArmed,
+            onPunch: handlePunch,
+            onOpenAudioSettings: () => {
+              setSettingsReveal("recording-latency");
+              setSettingsOpen(true);
+            },
+          }}
+          onSaveAs={handleSaveProjectAs}
+          hasProject={Boolean(head)}
+          onNewProject={handleNewProject}
+          onOpenProject={handleOpenProject}
+        />
+      )}
 
-      <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_360px] gap-px bg-[var(--border)]">
-        <section className="flex h-full min-h-0 flex-col bg-[var(--surface)]">
-          <KeyringWaiting pending={keyCheckPending} />
-          {notice?.kind === "read-error" ? (
-            <ErrorBanner
-              testId="keychain-error"
-              message={notice.message}
-              action={{
-                label: "Open Settings",
-                onClick: () => setSettingsOpen(true),
-              }}
-              onDismiss={() => setKeychainError(null)}
-            />
-          ) : null}
-          {notice?.kind === "session-only" && !sessionOnlyDismissed ? (
-            <ErrorBanner
-              testId="keychain-session-only"
-              message={notice.message}
-              dismissLabel="Dismiss warning"
-              onDismiss={() => {
-                writeSessionOnlyDismissed(true);
-                setSessionOnlyDismissed(true);
-              }}
-            />
-          ) : null}
-          {renderError ? (
-            <ErrorBanner
-              testId="render-error"
-              message={renderError}
-              action={errorAction}
-              onDismiss={() => setRenderError(null)}
-            />
-          ) : null}
-          {punchNotice ? (
-            <ErrorBanner
-              tone="info"
-              testId="punch-notice"
-              message={punchNotice}
-              dismissLabel="Dismiss"
-              onDismiss={() => setPunchNotice(null)}
-            />
-          ) : null}
-          <RenderWarningsNotice notice={mixNotice(renderWarnings)} />
-          {exportedWithout ? (
-            <RenderWarningsNotice
-              testId="export-warnings"
-              notice={exportWarningNotice(exportedWithout.file, exportedWithout.warnings)}
-              onDismiss={() => setExportedWithout(null)}
-            />
-          ) : null}
+      {phone ? <div className="shrink-0 bg-[var(--surface)]">{notices}</div> : null}
 
-          {/* Above the timeline so a long run is visible wherever the
-              user is looking, and gone again the moment it finishes. */}
-          <ToolProgressBar />
-
-          {compareMode ? (
-            <ABCompareBar
-              aNodeId={compareMode.a}
-              bNodeId={compareMode.b}
-              onAudioPathChange={setMixPath}
-              acceptB={handleCompareAcceptB}
-              onAcceptB={handleAcceptB}
-              onClose={() => setCompareMode(null)}
-            />
-          ) : null}
+      <div
+        className={
+          phone
+            ? "relative min-h-0 flex-1 bg-[var(--surface)]"
+            : "grid min-h-0 grid-cols-[minmax(0,1fr)_360px] gap-px bg-[var(--border)]"
+        }
+      >
+        {/* On a phone both panes stay mounted and laid out, one over the
+            other, and the one that is not up is hidden and inert: the chat
+            keeps its conversation and the timeline keeps its waveforms and
+            its width, which `display: none` would take from it. Each is its
+            own stacking context with the shown one on top, because the
+            waveform canvases set their own visibility and would otherwise
+            show through the pane above them. */}
+        <section
+          data-testid="work-pane"
+          inert={phone && phonePane === "chat"}
+          className={`flex h-full min-h-0 flex-col bg-[var(--surface)] ${
+            phone ? `absolute inset-0 isolate ${phonePane === "chat" ? "invisible z-0" : "z-10"}` : ""
+          }`}
+        >
+          {phone ? null : notices}
 
           <div className="flex-1 min-h-0 overflow-hidden">
             {leftView === "timeline" ? (
@@ -1983,7 +2184,13 @@ function AppSession() {
           </div>
         </section>
 
-        <aside className="h-full min-h-0 bg-[var(--surface)]">
+        <aside
+          data-testid="chat-pane"
+          inert={phone && phonePane !== "chat"}
+          className={`h-full min-h-0 bg-[var(--surface)] ${
+            phone ? `absolute inset-0 isolate ${phonePane !== "chat" ? "invisible z-0" : "z-10"}` : ""
+          }`}
+        >
           <Chat ref={chatRef} 
             providerEpoch={providerEpoch}
             rendering={rendering}
@@ -2004,18 +2211,22 @@ function AppSession() {
         </aside>
       </div>
 
-      <StatusBar
-        audioPath={timelineSource}
-        trackName={sourceTrack?.name}
-        head={head}
-        previewId={previewId}
-        rendering={rendering}
-        selection={selection}
-        mixStale={mixIsStale({ mixPath, mixNodeId }, shownNode)}
-        mixMissing={compareMode === null && mixIsMissing({ mixPath, mixNodeId })}
-        loadError={audioLoadError}
-        restoringHistory={headMove.pending}
-      />
+      {phone ? (
+        <MobileTabBar pane={phonePane} onSelect={selectPhonePane} />
+      ) : (
+        <StatusBar
+          audioPath={timelineSource}
+          trackName={sourceTrack?.name}
+          head={head}
+          previewId={previewId}
+          rendering={rendering}
+          selection={selection}
+          mixStale={mixIsStale({ mixPath, mixNodeId }, shownNode)}
+          mixMissing={compareMode === null && mixIsMissing({ mixPath, mixNodeId })}
+          loadError={audioLoadError}
+          restoringHistory={headMove.pending}
+        />
+      )}
 
       {showBlocking ? (
         <Settings
@@ -2057,6 +2268,28 @@ function AppSession() {
       ) : null}
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} onSelect={(prompt) => { setPaletteOpen(false); chatRef.current?.fillInput(prompt); }} />
       <ShortcutsOverlay open={showShortcuts} onClose={handleCloseShortcuts} />
+      {android ? (
+        <>
+          <MenuSheet
+            open={menuOpen}
+            onClose={() => setMenuOpen(false)}
+            items={mobileMenu}
+            footer={`edytlab ${__APP_VERSION__} for Android${device?.model ? ` on ${device.model}` : ""}`}
+          />
+          <ProjectsSheet
+            open={projectsOpen}
+            onClose={() => setProjectsOpen(false)}
+            currentPath={projectPath}
+            onOpenProject={handleOpenRecent}
+            onDuplicateInto={saveProjectInto}
+          />
+          <ExportsSheet
+            open={exportsOpen}
+            onClose={() => setExportsOpen(false)}
+            refreshKey={exportsVersion}
+          />
+        </>
+      ) : null}
       <TemplatePickerModal
         open={showTemplatePicker}
         templates={templates}

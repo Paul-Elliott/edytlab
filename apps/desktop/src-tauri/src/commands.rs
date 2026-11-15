@@ -245,7 +245,7 @@ fn lock_std<'a, T>(
 ///
 /// What goes here is any command that can wait on a lock a tool holds.
 /// `tests/main_thread_commands.rs` checks that none is left outside it.
-async fn blocking<T, F>(state: &State<'_, AppState>, body: F) -> CmdResult<T>
+pub(crate) async fn blocking<T, F>(state: &State<'_, AppState>, body: F) -> CmdResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&AppState) -> CmdResult<T> + Send + 'static,
@@ -368,7 +368,7 @@ fn edytlab_home() -> PathBuf {
 }
 
 /// The project currently open, or an error naming what to do instead.
-fn current_project_dir(state: &AppState) -> Result<PathBuf, CommandError> {
+pub(crate) fn current_project_dir(state: &AppState) -> Result<PathBuf, CommandError> {
     let dir = lock_std(&state.project_dir, "project_dir")?;
     dir.clone().ok_or(CommandError::NoSession)
 }
@@ -1708,7 +1708,7 @@ const THIRD_PARTY_NOTICES_RESOURCE: &str = "licenses/THIRD_PARTY_NOTICES.txt";
 /// so it runs on the blocking pool.
 #[tauri::command]
 pub async fn third_party_notices(app: tauri::AppHandle) -> CmdResult<String> {
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let resource_dir = crate::resources::root(&app)?;
     tauri::async_runtime::spawn_blocking(move || read_third_party_notices(&resource_dir))
         .await
         .map_err(|e| CommandError::TaskFailed(e.to_string()).to_string())?
@@ -1987,6 +1987,12 @@ pub fn ml_models_with_catalog_for_app<R: Runtime>(
 ) -> MlModels {
     match models_dir {
         Some(dir) => MlModels::with_offered(dir, catalog, offered, move |status| {
+            // Android: keep the screen on while a model is coming down.
+            crate::android::set_busy(
+                &handle,
+                &format!("download:{}", status.model),
+                matches!(status.state, MlModelStateDto::Downloading { .. }),
+            );
             let _ = handle.emit(ML_MODEL_PROGRESS_EVENT, status);
         }),
         None => MlModels::unavailable(),
@@ -3847,6 +3853,10 @@ pub async fn send_message<R: Runtime>(
     text: String,
     disabled_tools: Vec<String>,
 ) -> CmdResult<()> {
+    // Android: the screen stays on for the length of the turn, or the system
+    // would stop a long tool (a stem separation, a transcription) soon after
+    // it went dark. Nothing on a desktop.
+    let _busy = crate::android::Busy::during(&app, "turn");
     // Build the per-turn SessionContext from the current selection, the
     // annotations on the store head, and the head's tracks (#408), buses
     // (#552) and master chain (#460). We snapshot these before acquiring
@@ -5330,10 +5340,8 @@ pub struct TemplateInfo {
 
 #[tauri::command]
 pub async fn list_templates(app_handle: tauri::AppHandle) -> CmdResult<Vec<TemplateInfo>> {
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource dir: {e}"))?;
+    let resource_dir =
+        crate::resources::root(&app_handle).map_err(|e| format!("resource dir: {e}"))?;
     let templates_dir = resource_dir.join("templates");
     // Reads every bundled template file: file work, and it takes no lock,
     // so it runs on the blocking pool.
@@ -5383,10 +5391,8 @@ fn apply_template_inner(
     app_handle: &tauri::AppHandle,
     name: String,
 ) -> CmdResult<String> {
-    let resource_dir = app_handle
-        .path()
-        .resource_dir()
-        .map_err(|e| format!("resource dir: {e}"))?;
+    let resource_dir =
+        crate::resources::root(app_handle).map_err(|e| format!("resource dir: {e}"))?;
     let templates_dir = resource_dir.join("templates");
     let entries = std::fs::read_dir(&templates_dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
@@ -6041,7 +6047,9 @@ fn rebuild_agent_from(
                 None => agent,
             };
             let agent = agent.with_skills(state.skills_handle());
-            let agent = match profile_body {
+            // On Android the model is also told where exports go and that
+            // there are no paths to ask for (`android.rs`).
+            let agent = match crate::android::with_platform_note(profile_body) {
                 Some(body) => agent.with_profile_body(body),
                 None => agent,
             };
@@ -6833,10 +6841,16 @@ fn start_recording_with(
 #[tauri::command]
 pub async fn timer_record(
     state: State<'_, RecorderState>,
+    app_state: State<'_, AppState>,
     output_path: String,
     start_after_sec: Option<f64>,
     duration_sec: Option<f64>,
 ) -> CmdResult<serde_json::Value> {
+    // Where the take is saved (on Android, inside the open project).
+    let take_path = crate::android::recording_destination(
+        &output_path,
+        current_project_dir(&app_state).ok().as_deref(),
+    );
     let schedule = recorder::Schedule {
         start_after_sec,
         duration_sec,
@@ -6869,8 +6883,7 @@ pub async fn timer_record(
         if tools::progress::cancelled() {
             let rec = lock_recorder_slot(&state.0).take();
             if let Some(rec) = rec {
-                let path = std::path::PathBuf::from(&output_path);
-                let _ = rec.stop_and_save(&path);
+                let _ = rec.stop_and_save(&take_path);
             }
             tools::progress::report(serde_json::json!({
                 "kind": "timer_record", "done": true, "cancelled": true,
@@ -6903,8 +6916,7 @@ pub async fn timer_record(
     let rec = lock_recorder_slot(&state.0)
         .take()
         .ok_or_else(|| "the recording vanished before it could be saved".to_string())?;
-    let path = std::path::PathBuf::from(&output_path);
-    let (saved, sr, ch) = rec.stop_and_save(&path).map_err(|e| e.to_string())?;
+    let (saved, sr, ch) = rec.stop_and_save(&take_path).map_err(|e| e.to_string())?;
 
     tools::progress::report(serde_json::json!({
         "kind": "timer_record", "done": true, "cancelled": false,
@@ -7256,12 +7268,17 @@ pub fn cancel_punch_record() -> CmdResult<()> {
 #[tauri::command]
 pub fn stop_recording(
     state: State<'_, RecorderState>,
+    app_state: State<'_, AppState>,
     output_path: String,
 ) -> CmdResult<serde_json::Value> {
     let rec = lock_recorder_slot(&state.0)
         .take()
         .ok_or_else(|| "no active recording".to_string())?;
-    let path = std::path::PathBuf::from(&output_path);
+    // On Android, inside the open project; elsewhere the path as given.
+    let path = crate::android::recording_destination(
+        &output_path,
+        current_project_dir(&app_state).ok().as_deref(),
+    );
     let (saved_path, sr, ch) = rec.stop_and_save(&path).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "path": saved_path.to_string_lossy(),
@@ -7300,7 +7317,7 @@ pub fn stop_recording(
 /// without a restart.
 #[tauri::command]
 pub fn install_bundled_skills(app: tauri::AppHandle) -> CmdResult<usize> {
-    let resource_dir = app.path().resource_dir().map_err(|e| e.to_string())?;
+    let resource_dir = crate::resources::root(&app)?;
     let bundled_dir = resource_dir.join("bundled-skills");
     let skills_dir = edytlab_skills_dir(&app)?;
 
@@ -7329,17 +7346,17 @@ pub fn install_bundled_skills(app: tauri::AppHandle) -> CmdResult<usize> {
 // ---------------------------------------------------------------------------
 
 fn edytlab_skills_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = match app.path().home_dir() {
-        Ok(home) => home,
-        Err(_) => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    let base = match crate::paths::home_base(app) {
+        Some(home) => home,
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
     };
     Ok(base.join(".edytlab").join("skills"))
 }
 
 fn edytlab_agents_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
-    let base = match app.path().home_dir() {
-        Ok(home) => home,
-        Err(_) => app.path().app_data_dir().map_err(|e| e.to_string())?,
+    let base = match crate::paths::home_base(app) {
+        Some(home) => home,
+        None => app.path().app_data_dir().map_err(|e| e.to_string())?,
     };
     Ok(base.join(".edytlab").join("agents"))
 }

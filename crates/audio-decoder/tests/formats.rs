@@ -179,12 +179,18 @@ fn flac_decodes_to_the_encoded_tone() {
 
 // --- M4A/AAC-LC through the operating system's decoder ----------------------
 //
-// AudioToolbox on macOS and Media Foundation on Windows (#764). Linux has no
-// system decoder and refuses the files (`tests/unsupported.rs`). The level and
-// frequency tolerances are the lossy ones; the length is exact (see
-// `assert_aac_length_and_level`).
+// AudioToolbox on macOS, Media Foundation on Windows and the NDK's media
+// library on Android (#764). Linux has no system decoder and refuses the files
+// (`tests/unsupported.rs`). The level and frequency tolerances are the lossy
+// ones; the length is exact (see `assert_aac_length_and_level`).
+//
+// CI runs these on macOS and Windows. Nothing runs them on Android yet: they
+// are compiled for it, and they are what a device run has to pass. The exact
+// length is what an Android 10 or later reader gives; Android 8 and 9 do not
+// report the priming, so there the mono file is 23,074 frames and the stereo
+// one 25,024 (`src/os_aac/android_trim.rs`).
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 mod os_aac {
     use super::*;
     use audio_decoder::decode_bytes;

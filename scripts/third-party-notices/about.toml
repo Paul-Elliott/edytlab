@@ -28,6 +28,9 @@ targets = [
     "aarch64-pc-windows-msvc",
     "x86_64-apple-darwin",
     "aarch64-apple-darwin",
+    # The Android APK (android.yml). Phones and tablets are arm64; the x86_64
+    # build is only what the CI emulator runs and links the same crates.
+    "aarch64-linux-android",
 ]
 
 ignore-dev-dependencies = true

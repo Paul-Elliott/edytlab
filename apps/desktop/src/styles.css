@@ -1223,3 +1223,103 @@ input[type="range"]:active::-moz-range-thumb {
     }
   }
 }
+
+/*
+ * ---------------------------------------------------------------------
+ * Android
+ * ---------------------------------------------------------------------
+ *
+ * The Android app is this frontend in the system WebView. `main.tsx` marks
+ * the document with `data-platform="android"` there, and everything below
+ * is either under that mark or a class only the Android components use, so
+ * the desktop window is styled exactly as before.
+ *
+ * The system bars and the on-screen keyboard are not handled here: the
+ * activity (`MainActivity.kt`) insets the WebView by them, so the page's
+ * height is always the room that is really free.
+ */
+
+/* A control a finger can hit: 44 CSS px is the common floor. */
+.touch-target {
+  min-width: 2.75rem;
+  min-height: 2.75rem;
+}
+
+/* The Android dialog surface (`mobile/Sheet.tsx`): a sheet off the bottom
+   edge on a phone, a card in the middle once there is room. */
+.sheet-card {
+  max-height: calc(100dvh - 1.5rem);
+  border-radius: 1rem 1rem 0 0;
+  border-bottom-width: 0;
+}
+@media (min-width: 640px) {
+  .sheet-card {
+    max-height: calc(100dvh - 4rem);
+    border-radius: 0.75rem;
+    border-bottom-width: 1px;
+  }
+}
+
+html[data-platform="android"] {
+  /* No pull-to-refresh glow and no rubber band behind a fixed layout. */
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  /* Long-pressing a label must not start a text selection: a long press
+     is how the app's own menus open. Text that is meant to be copied opts
+     back in below. */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+}
+html[data-platform="android"] body {
+  overscroll-behavior: none;
+  /* Double-tap does not zoom the page, so a tap acts at once. */
+  touch-action: manipulation;
+}
+html[data-platform="android"] :is(input, textarea, [contenteditable="true"], .selectable, [data-testid="message-bubble"]) {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/* The window is as tall as the room the activity leaves it, which shrinks
+   when the keyboard opens. `100vh` would keep the full height and leave the
+   chat box behind the keys. */
+html[data-platform="android"] .app-shell {
+  height: 100dvh;
+  width: 100vw;
+}
+
+/* Finger-sized versions of the desktop's small controls. A pointer that is
+   coarse is a finger; the mouse keeps the compact sizes. */
+@media (pointer: coarse) {
+  html[data-platform="android"] :is(.btn-tool, .btn-secondary, .btn-primary, .btn-ghost, .btn-danger) {
+    min-height: 2.5rem;
+  }
+  html[data-platform="android"] input[type="range"] {
+    min-height: 2rem;
+  }
+}
+
+/* The timeline's toolbar is wider than a phone. It scrolls sideways there,
+   with no scrollbar drawn, and gives up its heading: the tab that is lit
+   already says "Timeline". */
+html[data-platform="android"] .timeline-toolbar {
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding-left: 8px !important;
+  padding-right: 8px !important;
+}
+html[data-platform="android"] .timeline-toolbar::-webkit-scrollbar {
+  display: none;
+}
+html[data-platform="android"] .timeline-toolbar > h2 {
+  display: none;
+}
+html[data-platform="android"] .timeline-toolbar-actions {
+  flex-shrink: 0;
+}
+
+/* What the desktop shows on hover has no hover to wait for here. */
+html[data-platform="android"] .group .opacity-0 {
+  opacity: 1;
+}

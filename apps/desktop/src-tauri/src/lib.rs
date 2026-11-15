@@ -5,6 +5,7 @@
 //! Anthropic API key or to open a project. The agent is constructed
 //! lazily once both have been provided.
 
+pub mod android;
 pub mod bundled_skills;
 pub mod chatgpt;
 pub mod commands;
@@ -12,9 +13,12 @@ pub mod compare;
 pub mod crash_reports;
 pub mod events;
 pub mod mcp_tool;
+pub mod paths;
+pub mod peaks;
 pub mod project;
 pub mod punch;
 pub mod reclaimer;
+pub mod resources;
 pub mod settings;
 pub mod state;
 pub mod window_mix;
@@ -46,16 +50,22 @@ use crate::commands::{
     upsert_agent_profile, upsert_mcp_server, upsert_skill, write_memory, RecorderState,
 };
 use crate::state::AppState;
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    Emitter, Manager,
-};
+#[cfg(desktop)]
+use tauri::menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+use tauri::{Emitter, Manager};
 
 /// Event name the frontend listens for when the user picks `File > Open
 /// Audio…` from the native menu. The webview's own dialog button uses
 /// the same flow client-side, so this event keeps the menu and toolbar
-/// behavioural parity in one place.
+/// behavioural parity in one place. Desktop only: Android has no menu bar.
+#[cfg(desktop)]
 const MENU_OPEN_FILE_EVENT: &str = "menu://open-file";
+
+/// The file name of this crate's library in the Android package: `lib` +
+/// the `[lib] name` in `Cargo.toml` + `.so`. A test below holds it equal to
+/// the manifest.
+#[cfg(any(target_os = "android", test))]
+pub(crate) const ANDROID_APP_LIBRARY: &str = "libedytlab_desktop_lib.so";
 
 /// Register the directory the installer puts the ONNX Runtime library in,
 /// so `ml_pipeline::runtime::ensure` looks there after `ORT_DYLIB_PATH` and
@@ -69,10 +79,21 @@ const MENU_OPEN_FILE_EVENT: &str = "menu://open-file";
 /// a build that is not installed (`cargo run`, `tauri dev`) has the library
 /// next to the executable or has none.
 fn register_ml_runtime_bundle(resource_dir: Option<&std::path::Path>) {
-    let exe = std::env::current_exe().ok();
-    let Some(dir) =
+    // Android: the library comes in the package (the `onnxruntime-android`
+    // dependency in `gen/android/app/build.gradle.kts`) and the system
+    // unpacks it beside the app's own library at install. That folder is
+    // found from this library's own mapping; see `loaded_library_dir`.
+    #[cfg(target_os = "android")]
+    let dir = {
+        let _ = resource_dir;
+        ml_pipeline::runtime::loaded_library_dir(ANDROID_APP_LIBRARY)
+    };
+    #[cfg(not(target_os = "android"))]
+    let dir = {
+        let exe = std::env::current_exe().ok();
         ml_pipeline::runtime::bundle_dir_for(std::env::consts::OS, exe.as_deref(), resource_dir)
-    else {
+    };
+    let Some(dir) = dir else {
         return;
     };
     if !ml_pipeline::runtime::set_bundle_dir(dir.clone()) {
@@ -133,8 +154,12 @@ pub fn run() {
     // as long as the user does (#497).
     app_state.begin_startup_reads();
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
+    let builder = tauri::Builder::default().plugin(tauri_plugin_dialog::init());
+    // The Kotlin half of the Android app (`android.rs`): the picker's
+    // files, the share sheet, the microphone permission.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(crate::android::init());
+    builder
         .manage(app_state.clone())
         .manage(RecorderState(std::sync::Mutex::new(None)))
         .setup(move |app| {
@@ -159,6 +184,15 @@ pub fn run() {
                 if let Ok(dir) = dir {
                     app_state.crash_reports.redact_path(&dir, replacement);
                 }
+            }
+
+            // Android keeps the bundled files as package assets, which have
+            // no path: write them to the app's storage before anything asks
+            // for a template, a bundled skill or the notices.
+            #[cfg(target_os = "android")]
+            {
+                crate::resources::prepare(app);
+                crate::android::prepare_storage(app);
             }
 
             // Tell the ONNX Runtime loader where the installer puts the
@@ -332,69 +366,87 @@ pub fn run() {
             // rebuilt it. Its own thread, because verifying takes replays.
             crate::reclaimer::spawn(app_state.clone());
 
-            // Native menu: File > Open Audio… / Quit. Frontend listens
-            // for `menu://open-file` and runs the dialog open + load
-            // path; Quit uses tauri's built-in close behaviour.
-            let open_audio = MenuItemBuilder::with_id("open_audio", "Open Audio…")
-                .accelerator("CmdOrCtrl+O")
-                .build(app)?;
-            let quit = MenuItemBuilder::with_id("quit", "Quit")
-                .accelerator("CmdOrCtrl+Q")
-                .build(app)?;
-            let file_menu = SubmenuBuilder::new(app, "File")
-                .item(&open_audio)
-                .separator()
-                .item(&quit)
-                .build()?;
+            // Desktop only: `tauri::menu` and `set_menu` do not exist on mobile,
+            // where the toolbar buttons do this work.
+            #[cfg(desktop)]
+            {
+                // Native menu: File > Open Audio… / Quit. Frontend listens
+                // for `menu://open-file` and runs the dialog open + load
+                // path; Quit uses tauri's built-in close behaviour.
+                let open_audio = MenuItemBuilder::with_id("open_audio", "Open Audio…")
+                    .accelerator("CmdOrCtrl+O")
+                    .build(app)?;
+                let quit = MenuItemBuilder::with_id("quit", "Quit")
+                    .accelerator("CmdOrCtrl+Q")
+                    .build(app)?;
+                let file_menu = SubmenuBuilder::new(app, "File")
+                    .item(&open_audio)
+                    .separator()
+                    .item(&quit)
+                    .build()?;
 
-            // Cut / Copy / Paste / Select All / Undo have to be real
-            // menu items or they do not work at all.
-            //
-            // On macOS those shortcuts are not handled by the webview.
-            // They are dispatched through the responder chain by the
-            // Edit menu's *key equivalents*, so an application with no
-            // Edit menu has no ⌘V — the keystroke reaches nothing and
-            // is silently dropped.
-            //
-            // Tauri's default menu includes this submenu. Building a
-            // menu from scratch with `MenuBuilder::new` and calling
-            // `set_menu` replaces that default wholesale, so adding a
-            // File menu had the side effect of deleting Edit — and with
-            // it, pasting into every text field in the app: the chat
-            // box, the API key and base URL fields, the model picker,
-            // the graph's rename overlay, the label lane.
-            //
-            // Nothing about the failure points at the menu bar, which
-            // is why it survived: the field just ignores ⌘V.
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .undo()
-                .redo()
-                .separator()
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
+                // Cut / Copy / Paste / Select All / Undo have to be real
+                // menu items or they do not work at all.
+                //
+                // On macOS those shortcuts are not handled by the webview.
+                // They are dispatched through the responder chain by the
+                // Edit menu's *key equivalents*, so an application with no
+                // Edit menu has no ⌘V — the keystroke reaches nothing and
+                // is silently dropped.
+                //
+                // Tauri's default menu includes this submenu. Building a
+                // menu from scratch with `MenuBuilder::new` and calling
+                // `set_menu` replaces that default wholesale, so adding a
+                // File menu had the side effect of deleting Edit — and with
+                // it, pasting into every text field in the app: the chat
+                // box, the API key and base URL fields, the model picker,
+                // the graph's rename overlay, the label lane.
+                //
+                // Nothing about the failure points at the menu bar, which
+                // is why it survived: the field just ignores ⌘V.
+                let edit_menu = SubmenuBuilder::new(app, "Edit")
+                    .undo()
+                    .redo()
+                    .separator()
+                    .cut()
+                    .copy()
+                    .paste()
+                    .select_all()
+                    .build()?;
 
-            let menu = MenuBuilder::new(app)
-                .item(&file_menu)
-                .item(&edit_menu)
-                .build()?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app_handle, event| match event.id().as_ref() {
-                "open_audio" => {
-                    let _ = app_handle.emit(MENU_OPEN_FILE_EVENT, ());
-                }
-                "quit" => {
-                    app_handle.exit(0);
-                }
-                _ => {}
-            });
+                let menu = MenuBuilder::new(app)
+                    .item(&file_menu)
+                    .item(&edit_menu)
+                    .build()?;
+                app.set_menu(menu)?;
+                app.on_menu_event(|app_handle, event| match event.id().as_ref() {
+                    "open_audio" => {
+                        let _ = app_handle.emit(MENU_OPEN_FILE_EVENT, ());
+                    }
+                    "quit" => {
+                        app_handle.exit(0);
+                    }
+                    _ => {}
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             open_project,
             batch_load,
+            crate::android::device_info,
+            crate::android::list_managed_projects,
+            crate::android::create_managed_project,
+            crate::android::delete_managed_project,
+            crate::android::import_audio,
+            crate::android::export_destination,
+            crate::android::list_exports,
+            crate::android::delete_export,
+            crate::android::share_export,
+            crate::android::save_export_to,
+            crate::android::leave_app,
+            crate::android::ensure_microphone,
+            crate::peaks::waveform_peaks,
             send_message,
             set_api_key,
             set_api_key_for,
@@ -540,7 +592,7 @@ fn register_keychain_settings_dir<R: tauri::Runtime>(app: &tauri::App<R>) {
 /// Windows and through sandbox wrappers; falls back to the OS app
 /// data dir on the rare platform where `home_dir()` is unavailable.
 fn resolve_global_memory_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("memory.md");
     }
     app.path()
@@ -552,7 +604,7 @@ fn resolve_global_memory_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::pa
 
 /// Resolve `~/.edytlab/skills/`. Same fallback as the memory path.
 fn resolve_global_skills_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("skills");
     }
     app.path()
@@ -564,7 +616,7 @@ fn resolve_global_skills_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::pat
 
 /// Resolve `~/.edytlab/agents/`. Same fallback strategy.
 fn resolve_global_agent_profiles_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("agents");
     }
     app.path()
@@ -576,7 +628,7 @@ fn resolve_global_agent_profiles_dir<R: tauri::Runtime>(app: &tauri::App<R>) -> 
 
 /// Resolve `~/.edytlab/settings.json`. Same fallback strategy.
 fn resolve_global_settings_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join(settings::SETTINGS_FILE);
     }
     app.path()
@@ -588,7 +640,7 @@ fn resolve_global_settings_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::
 
 /// Resolve `~/.edytlab/mcp.json`. Same fallback strategy.
 fn resolve_global_mcp_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path::PathBuf {
-    if let Ok(home) = app.path().home_dir() {
+    if let Some(home) = crate::paths::home_base(app) {
         return home.join(".edytlab").join("mcp.json");
     }
     app.path()
@@ -596,4 +648,22 @@ fn resolve_global_mcp_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path:
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join(".edytlab")
         .join("mcp.json")
+}
+
+#[cfg(test)]
+mod android_library_tests {
+    /// The Android app finds the ONNX Runtime library beside its own, which
+    /// it looks up by file name. A renamed `[lib]` would leave it looking for
+    /// a name nothing is loaded under, and the runtime "not found".
+    #[test]
+    fn the_android_library_name_is_the_lib_name_in_the_manifest() {
+        let manifest = include_str!("../Cargo.toml");
+        let lib = manifest
+            .split("[lib]")
+            .nth(1)
+            .and_then(|rest| rest.lines().find(|line| line.starts_with("name")))
+            .and_then(|line| line.split('"').nth(1))
+            .expect("Cargo.toml has a [lib] name");
+        assert_eq!(super::ANDROID_APP_LIBRARY, format!("lib{lib}.so"));
+    }
 }

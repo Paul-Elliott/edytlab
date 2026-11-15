@@ -490,6 +490,19 @@ const MAY_DELETE: &[(&str, usize, &str)] = &[
         "a skill or an agent profile the user deletes",
     ),
     ("desktop/state.rs", 1, "the active agent profile's sidecar"),
+    (
+        "desktop/android.rs",
+        3,
+        "the Android app: a copy in a project's `imports/` that `load` refused, so no node \
+         names it; a file in the app's exports folder, which is outside every project; and a \
+         whole project the user deletes from the list, never the open one, held by a private \
+         store so no live store of it exists (`delete_project_in`)",
+    ),
+    (
+        "desktop/resources.rs",
+        1,
+        "the Android app's unpacked resources of a version that is no longer installed",
+    ),
 ];
 
 /// The names that delete a file or a folder.
@@ -613,6 +626,12 @@ const MAY_PUT: &[(&str, usize, &str)] = &[
         1,
         "Save As copies the project's other files (nodes, head, metadata) into a new, \
          empty folder; its audio goes through `OwnedFile::copy_into`",
+    ),
+    (
+        "desktop/resources.rs",
+        1,
+        "the Android app unpacks a bundled template, skill or the notices into its own \
+         `resources/` folder, outside every project",
     ),
 ];
 

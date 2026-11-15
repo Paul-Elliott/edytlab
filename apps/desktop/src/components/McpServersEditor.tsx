@@ -28,6 +28,7 @@ import {
   type McpTransport,
 } from "../lib/tauri-bridge";
 import { IDENTIFIER_INPUT } from "../lib/identifierInput";
+import { isAndroid } from "../lib/platform";
 import { useRecordEditor } from "../lib/useRecordEditor";
 import {
   EditorBody,
@@ -35,6 +36,9 @@ import {
   EditorLayout,
   Row,
 } from "./RecordEditorParts";
+
+/** A new server's starting transport: the one this platform can run. */
+const draftTransport = (): McpTransport => (isAndroid() ? "sse" : "stdio");
 
 const DRAFT_DEFAULT: McpServerEntry = {
   id: "",
@@ -53,7 +57,7 @@ export function McpServersEditor() {
     read: readMcpServer,
     upsert: upsertMcpServer,
     remove: deleteMcpServer,
-    newDraft: () => ({ ...DRAFT_DEFAULT }),
+    newDraft: () => ({ ...DRAFT_DEFAULT, transport: draftTransport() }),
     nameOf: (e) => e.id,
     noun: "server",
   });
@@ -223,10 +227,22 @@ function McpServerForm({ entry, isNew, onChange }: FormProps) {
           }
           className="field w-full px-2 py-1 text-xs outline-none transition"
         >
-          <option value="stdio">stdio (local subprocess)</option>
+          {/* Android cannot start a program for a server to run in. */}
+          <option value="stdio" disabled={isAndroid()}>
+            {isAndroid() ? "stdio (needs a desktop)" : "stdio (local subprocess)"}
+          </option>
           <option value="sse">remote (HTTP)</option>
         </select>
       </Row>
+      {isAndroid() && entry.transport === "stdio" ? (
+        <p
+          data-testid="mcp-stdio-unavailable"
+          className="mb-2 rounded-md border border-[var(--warning-border)] bg-[var(--warning-soft)] px-2 py-1.5 text-xs text-[var(--text)]"
+        >
+          This server starts a program on the computer it runs on, which the Android app cannot
+          do. It is skipped here. Choose remote (HTTP) for a server reached by address.
+        </p>
+      ) : null}
       {entry.transport === "stdio" ? (
         <>
           <Row label="Command">

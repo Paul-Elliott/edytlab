@@ -50,6 +50,7 @@ import {
   type ReasoningEffort,
 } from "../lib/tauri-bridge";
 import { CHATGPT_LABEL } from "../lib/chatgptCopy";
+import { isAndroid } from "../lib/platform";
 import { EFFORT_OPTIONS, asEffort } from "../lib/effort";
 import { savedNotice } from "../lib/keychainNotice";
 import {
@@ -1286,7 +1287,11 @@ export function Settings({
               Provider
             </legend>
             <div className="grid grid-cols-3 gap-1.5">
-              {PROVIDERS.map((p) => (
+              {/* The ChatGPT plan signs in through a browser that answers on
+                  this machine's loopback address. Android freezes an app that
+                  is behind the browser, so the answer would be lost there:
+                  the Android app offers the providers that take a key. */}
+              {(isAndroid() ? PROVIDERS.filter((p) => !p.oauth) : PROVIDERS).map((p) => (
                 <label
                   key={p.id}
                   className={

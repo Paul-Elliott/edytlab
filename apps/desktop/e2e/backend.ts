@@ -1034,3 +1034,52 @@ export function crashReportsCommands({ enabled = false }: { enabled?: boolean } 
     }),
   };
 }
+
+/**
+ * The Android app's own commands (`src-tauri/src/android.rs`), for the
+ * `phone` and `tablet` projects.
+ *
+ * `device_info` is called at every launch there (it is how the menu names
+ * the device, and how Settings learns the memory that decides whether stem
+ * separation is offered), so every Android test starts from this. On a
+ * device it answers `{ android: true, total_ram_bytes, model }` from
+ * `EdytlabPlugin.deviceInfo`: `ActivityManager.MemoryInfo.totalMem`, which
+ * on a phone sold as 12 GB reads a little under that, and
+ * `"${Build.MANUFACTURER} ${Build.MODEL}"`.
+ *
+ * `list_managed_projects` and `list_exports` read a folder that does not
+ * exist on a fresh install and answer an empty list (`list_projects_in`,
+ * `list_exports_in`); a test of a device with projects or exports passes
+ * them in.
+ */
+export function androidCommands({
+  projects = [],
+  exports = [],
+  totalRamBytes = 11_600_000_000,
+}: {
+  projects?: { path: string; name: string; last_opened_at?: string | null }[];
+  exports?: { name: string; bytes: number; modified_ms: number }[];
+  totalRamBytes?: number;
+} = {}): Backend {
+  return {
+    device_info: ok({
+      android: true,
+      total_ram_bytes: totalRamBytes,
+      model: "Google Pixel 9",
+      // `!too_small_for_stems(total)`: `ANDROID_MIN_TOTAL_RAM_BYTES` is 7 GiB.
+      stems_supported: totalRamBytes >= 7 * 1024 ** 3,
+    }),
+    list_managed_projects: ok(projects),
+    list_exports: ok(exports),
+    // The back button's listener (`useBackButton`). Tauri's core `app`
+    // plugin answers `Ok(())` to both; the presses themselves a test makes
+    // with the window event the hook turns them into.
+    // `waveform_peaks` reads the file and reduces it (`peaks.rs`). The
+    // fixtures are tones of a steady level, so their outline is flat: 200
+    // peaks a second at that level. A test of a lane's picture gives the
+    // file's own answer with `peaksFor`.
+    waveform_peaks: ok({ duration_sec: 3, peaks: Array.from({ length: 600 }, () => 16384) }),
+    "plugin:app|register_listener": ok(null),
+    "plugin:app|remove_listener": ok(null),
+  };
+}

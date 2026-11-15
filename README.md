@@ -186,6 +186,27 @@ The Tauri bundle build is intentionally **not** in CI (too slow); release workfl
 
 App version is canonical in `apps/desktop/src-tauri/tauri.conf.json`; the `package.json` files and the Cargo workspace's `[workspace.package] version` mirror it, and `apps/desktop/src/__tests__/appVersion.test.ts` fails if they drift.
 
+## Android (this fork)
+
+This fork adds an Android build of the same app: the Rust core and the React frontend, through Tauri's Android target. It is sideloaded as an APK and is not on the Play Store.
+
+```sh
+rustup target add aarch64-linux-android
+export ANDROID_HOME=... NDK_HOME=$ANDROID_HOME/ndk/<version>
+pnpm --filter @edytlab/desktop tauri android build --apk --target aarch64
+```
+
+What differs from the desktop:
+
+- **Projects** are kept in the app and chosen from a list. Android has no folder picker.
+- **Import** goes through the system file picker (WAV, MP3, FLAC, Ogg, Opus, AIFF and M4A). **Exports** go to an Exports list, to share or save from.
+- **A phone** shows one pane at a time (Chat, Timeline, Transcript, History); a tablet shows two. Everything is reachable by touch.
+- **API keys** are kept under the Android Keystore.
+- **Stem separation** needs a device with 8 GB of memory. Transcription and speaker labels run on any supported device.
+- **Not on Android:** signing in with a ChatGPT plan, MCP servers that start a local program, the spectrogram view and snap-to-zero.
+
+Android 8.0 or newer. The design notes and the test setup are in [`docs/agents/android.md`](docs/agents/android.md).
+
 ## Contributing
 
 Working-style rules, branch naming, conventional-commit prefixes, and acceptance gates are codified in [`CLAUDE.md`](CLAUDE.md). One concern per PR; open as draft, squash-merge once CI is green. The contributor guide is [`docs/contributing.md`](docs/contributing.md) (how to add a tool, provider or component, test requirements); there is no separate CONTRIBUTING file.

@@ -5,6 +5,8 @@
  * `ModelRow.tsx`, which holds the only call of `downloadMlModel`.
  */
 
+import { useEffect, useState } from "react";
+
 import {
   STEM_DISCARD_QUESTION,
   STEM_MODEL_ID,
@@ -16,6 +18,8 @@ import {
   stemRemoveQuestion,
 } from "../lib/stemModel";
 import { SPEECH_MODEL_PENDING } from "../lib/speechModel";
+import { isAndroid } from "../lib/platform";
+import { deviceInfo } from "../lib/tauri-bridge";
 import { ModelRow, type ModelCopy } from "./ModelRow";
 
 const COPY: ModelCopy = {
@@ -34,6 +38,42 @@ const COPY: ModelCopy = {
   readyText: stemReadyText,
 };
 
+/**
+ * Shown in place of the row on an Android device with too little memory.
+ * The model peaks near 3 GB, and Android closes an app that takes that much
+ * on a smaller device, so the download is not offered there: 171 MB for
+ * something that cannot run.
+ */
+export const STEMS_NEED_MEMORY =
+  "Stem separation needs about 3 GB of free memory, so it runs on a phone or tablet with 8 GB or more. This device has less, and the stem model is not offered here.";
+
 export function StemModelRow() {
+  // Android only: a desktop is never refused, and is not asked.
+  const [tooSmall, setTooSmall] = useState(false);
+  useEffect(() => {
+    if (!isAndroid()) return undefined;
+    let cancelled = false;
+    deviceInfo()
+      .then((device) => {
+        if (!cancelled) setTooSmall(!device.stems_supported);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (tooSmall) {
+    return (
+      <div data-testid="stem-model-unavailable" className="mb-4">
+        <div className="mb-1.5 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-faint)]">
+          Stem model
+        </div>
+        <p className="rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 py-2 text-xs text-[var(--text-dim)]">
+          {STEMS_NEED_MEMORY}
+        </p>
+      </div>
+    );
+  }
   return <ModelRow copy={COPY} />;
 }

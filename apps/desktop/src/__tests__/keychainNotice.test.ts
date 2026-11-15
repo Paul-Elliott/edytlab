@@ -148,3 +148,27 @@ describe("chatGptStorageNotice", () => {
     expect(n?.message).toContain("(too long)");
   });
 });
+
+describe("keychainNotice on Android", () => {
+  const ANDROID_UA =
+    "Mozilla/5.0 (Linux; Android 15; Pixel 9; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/140.0.0.0 Mobile Safari/537.36";
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("does not tell a phone to unlock a keyring or start a Secret Service", () => {
+    vi.stubGlobal("navigator", { userAgent: ANDROID_UA });
+
+    const unread = keychainNotice("the saved value could not be decrypted", null);
+    expect(unread?.kind).toBe("read-error");
+    expect(unread?.message).toContain("this device's secure storage");
+    expect(unread?.message).toContain("(the saved value could not be decrypted)");
+    expect(unread?.message).not.toMatch(/keyring|Secret Service|computer/i);
+
+    const lost = keychainNotice(null, { persistent: false, reason: "round trip failed" });
+    expect(lost?.kind).toBe("session-only");
+    expect(lost?.message).toContain("(round trip failed)");
+    expect(lost?.message).not.toMatch(/keyring|Secret Service|computer/i);
+
+    expect(keychainNotice(null, { persistent: true, reason: null })).toBeNull();
+  });
+});

@@ -1,0 +1,13 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "identifier": "app.edytlab.android",
+  "bundle": {
+    "android": {
+      "minSdkVersion": 26
+    },
+    "resources": {
+      "licenses/onnxruntime-android/LICENSE": "licenses/onnxruntime/LICENSE",
+      "licenses/onnxruntime-android/ThirdPartyNotices.txt": "licenses/onnxruntime/ThirdPartyNotices.txt"
+    }
+  }
+}

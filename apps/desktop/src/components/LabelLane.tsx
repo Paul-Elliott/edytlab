@@ -34,6 +34,8 @@
  * and the ruler use, so a label lines up with the audio at any zoom.
  */
 
+import { longPress } from "../lib/longPress";
+import { isAndroid } from "../lib/platform";
 import { useEffect, useRef, useState } from "react";
 
 import type { Marker } from "../lib/tauri-bridge";
@@ -270,7 +272,7 @@ export function LabelLane({
           const r = e.currentTarget.getBoundingClientRect();
           openAdding(secondsAt(e.clientX), e.clientX - r.left, r.width);
         }}
-        title="Double-click to add a label"
+        title={isAndroid() ? "Double-tap to add a label" : "Double-click to add a label"}
         style={{ position: "relative", flex: 1, cursor: "copy", overflow: "hidden" }}
       >
         {duration > 0 &&
@@ -435,11 +437,15 @@ export function LabelLane({
                       setDraft(m.name);
                       setEditing(m.id);
                     }}
-                    onContextMenu={(e) => {
-                      e.preventDefault();
+                    {...longPress((at) => {
+                      at.preventDefault();
                       onRemove(m.id);
-                    }}
-                    title={`${m.name} — drag to move, double-click to rename, right-click to delete`}
+                    })}
+                    title={
+                      isAndroid()
+                        ? `${m.name}: double-tap to rename, press and hold to delete`
+                        : `${m.name} — drag to move, double-click to rename, right-click to delete`
+                    }
                     style={{
                       fontSize: 10,
                       fontFamily: "var(--font-mono)",

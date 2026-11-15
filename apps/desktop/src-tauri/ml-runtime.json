@@ -32,5 +32,17 @@
       "install_as": "libonnxruntime.dylib",
       "library_sha256": "6fee21a0dbcaa98fe082cb4f7ed07ec5def439df36198f47b61dc205e7d2a1fa"
     }
+  },
+  "android": {
+    "_about": "The same runtime for the Android app, which takes it from Microsoft's Maven package and not from a release archive: `gen/android/app/build.gradle.kts` names this artifact and version, and the package's native library is unpacked beside the app's own at install (`ml_pipeline::runtime::loaded_library_dir`). `aar_sha256` is the package file's digest and `libraries` each ABI's `jni/<abi>/libonnxruntime.so` inside it. The version must stay equal to `version` above; crates/ml-pipeline/tests/runtime_manifest.rs checks that and that the Gradle file agrees.",
+    "artifact": "com.microsoft.onnxruntime:onnxruntime-android",
+    "version": "1.23.2",
+    "url": "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/1.23.2/onnxruntime-android-1.23.2.aar",
+    "aar_sha256": "82048d1f462218adae4ba76477089ab0ba76093d84f733540066db1a8ba6b827",
+    "install_as": "libonnxruntime.so",
+    "libraries": {
+      "arm64-v8a": "e40f09d07dc53726b8bfbf48a7907673b8f86718a057655a62790a39874a7302",
+      "x86_64": "972c17c056eaae946a415d9efdd8018b729639974df075e495f0092441478fb7"
+    }
   }
 }

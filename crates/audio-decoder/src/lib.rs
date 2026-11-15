@@ -51,14 +51,14 @@ use symphonia::core::meta::MetadataOptions;
 pub const SUPPORTED_EXTENSIONS: &[&str] = &["wav", "mp3", "flac", "ogg", "opus", "aif", "aiff"];
 
 /// Extensions opened only by the operating system's own decoder, so only on
-/// the platforms that have one: M4A/AAC on macOS (AudioToolbox) and Windows
-/// (Media Foundation). No AAC decoder is built into the app, because AAC
-/// decoders need a patent licence the project does not hold (#764); Linux has
-/// no system decoder and refuses the file.
+/// the platforms that have one: M4A/AAC on macOS (AudioToolbox), Windows
+/// (Media Foundation) and Android (the NDK's media library). No AAC decoder is
+/// built into the app, because AAC decoders need a patent licence the project
+/// does not hold (#764); Linux has no system decoder and refuses the file.
 pub const OS_DECODER_EXTENSIONS: &[&str] = &["m4a"];
 
 /// Whether this platform has an operating-system decoder for
-/// [`OS_DECODER_EXTENSIONS`]: true on macOS and Windows.
+/// [`OS_DECODER_EXTENSIONS`]: true on macOS, Windows and Android.
 pub const OS_DECODER_AVAILABLE: bool = os_aac::AVAILABLE;
 
 /// The extensions the app imports on this platform: [`SUPPORTED_EXTENSIONS`],
@@ -94,9 +94,9 @@ pub enum DecodeError {
     #[error("no audio track found in container")]
     NoAudioTrack,
 
-    /// The operating system's own decoder (used for M4A/AAC on macOS and
-    /// Windows) is missing or cannot be used. The text is the whole message,
-    /// written for the person, and says what to install or do instead.
+    /// The operating system's own decoder (used for M4A/AAC on macOS, Windows
+    /// and Android) is missing or cannot be used. The text is the whole
+    /// message, written for the person, and says what to install or do instead.
     #[error("{0}")]
     OsDecoderUnavailable(String),
 
@@ -150,7 +150,7 @@ fn first_audio_track(format: &dyn FormatReader) -> Option<(u32, &AudioCodecParam
 /// Decode a full audio file from disk.
 ///
 /// An M4A/MP4 file (by its bytes) goes to the operating system's decoder on
-/// macOS and Windows; on other platforms it is refused as
+/// macOS, Windows and Android; on other platforms it is refused as
 /// [`DecodeError::UnsupportedFormat`].
 pub fn decode_file(path: &Path) -> Result<DecodedAudio> {
     // Only the first bytes are read before the decoder is chosen. An M4A is
@@ -194,9 +194,9 @@ pub fn decode_bytes(bytes: &[u8]) -> Result<DecodedAudio> {
 /// every clip on the timeline.
 ///
 /// This reads the container's headers and stops. No packets are decoded.
-/// (An M4A file on macOS or Windows is the exception: the system decoder is
-/// asked for the rate it decodes at, which is the file decoded. Clips never
-/// name an M4A source, because `load` makes a WAV of it.)
+/// (An M4A file on macOS, Windows or Android is the exception: the system
+/// decoder is asked for the rate it decodes at, which is the file decoded.
+/// Clips never name an M4A source, because `load` makes a WAV of it.)
 pub fn probe_sample_rate(path: &Path) -> Result<u32> {
     // The file is opened once for symphonia: its first bytes decide the
     // decoder and name the format on failure, then go back in front of the

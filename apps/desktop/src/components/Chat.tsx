@@ -13,6 +13,7 @@
  * instead of a console trace.
  */
 
+import { isAndroid } from "../lib/platform";
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import {
@@ -1171,7 +1172,9 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function Chat({
           </div>
         </div>
         <p className="mt-1.5 px-1 text-[10px] font-mono uppercase tracking-[0.18em] text-[var(--text-faint)]">
-          enter to send · shift+enter for newline · / for commands · ctrl+k for all tools
+          {isAndroid()
+            ? "enter or the arrow to send · / for commands · Menu, Commands for ideas"
+            : "enter to send · shift+enter for newline · / for commands · ctrl+k for all tools"}
         </p>
       </form>
     </div>
@@ -1262,7 +1265,9 @@ function ChatEmptyHints({ onPick }: ChatEmptyHintsProps) {
           How it works
         </p>
         <p className="text-xs leading-relaxed text-[var(--text-faint)]">
-          Load audio on the left, then describe what you want. The assistant uses tools to edit your session and saves each change as a node in the graph.
+          {isAndroid()
+            ? "Tap Import to load audio, then describe what you want. The assistant uses tools to edit your session and saves each change as a step in History."
+            : "Load audio on the left, then describe what you want. The assistant uses tools to edit your session and saves each change as a node in the graph."}
         </p>
       </div>
 
@@ -1285,7 +1290,7 @@ function ChatEmptyHints({ onPick }: ChatEmptyHintsProps) {
       </div>
 
       <p className="text-[10px] text-[var(--text-faint)]">
-        Click the{" "}
+        {isAndroid() ? "Tap" : "Click"} the{" "}
         <span className="rounded border border-[var(--border-strong)] bg-[var(--surface-elev-2)] px-1 font-mono">
           Tools
         </span>{" "}

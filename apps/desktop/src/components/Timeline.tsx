@@ -55,7 +55,9 @@ const LANE_HEIGHT = 72;
  * loads its element (see the lane's `load`). Not a duration anyone reads. */
 const LANE_DURATION_HINT = 1;
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isAndroid } from "../lib/platform";
 import type { Marker } from "../lib/tauri-bridge";
+import { waveformPeaks } from "../lib/tauri-bridge";
 import { isMissingFileError } from "../lib/mixState";
 import { snapRange } from "../lib/zeroCrossing";
 import { AutomationLane } from "./AutomationLane";
@@ -463,6 +465,8 @@ function TrackLane({
   const spectrogramHostRef = useRef<HTMLDivElement>(null);
   const waveformWrapperRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
+  /** True while the lane is drawn from backend peaks, not decoded audio. */
+  const peaksOnlyRef = useRef(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   // Which fader's slider is held down, for the readout's colour. Two
@@ -697,7 +701,33 @@ function isAbort(err: unknown): boolean {
       // decodes, unless it is given a duration, and an element that never
       // loads never sends one. This figure only releases that wait: the
       // lane's duration is read from the decoded audio.
-      ws.load(url, undefined, LANE_DURATION_HINT).catch(fail);
+      const decodeHere = () => {
+        peaksOnlyRef.current = false;
+        ws.load(url, undefined, LANE_DURATION_HINT).catch(fail);
+      };
+      if (isAndroid()) {
+        // The Android app draws from peaks the backend worked out
+        // (`waveform_peaks`), and decodes nothing here: a decoded song is
+        // over a hundred megabytes a lane, which a phone's WebView does
+        // not have beside everything else. If the backend cannot say, the
+        // lane decodes as it does on a desktop.
+        waveformPeaks(audioPath).then(
+          (outline) => {
+            if (!current) return;
+            peaksOnlyRef.current = true;
+            ws.load(
+              url,
+              [Float32Array.from(outline.peaks, (v) => v / 32767)],
+              outline.duration_sec,
+            ).catch(fail);
+          },
+          () => {
+            if (current) decodeHere();
+          },
+        );
+      } else {
+        decodeHere();
+      }
     } catch (err) {
       fail(err);
     }
@@ -806,14 +836,12 @@ function isAbort(err: unknown): boolean {
    * still follows the press, to tell a click from a drag, but draws no
    * draft of a selection it will never make.
    */
-  const beginSelection = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+  const startSelectionAt = useCallback(
+    (clientX: number) => {
       if (!onSelectionChange && !onSeek) return;
       if (!(viewport.pxPerSec > 0) || !waveformWrapperRef.current) return;
-      // Only left-click; Shift is reserved for multi-select later.
-      if (e.button !== 0) return;
       const rect = waveformWrapperRef.current.getBoundingClientRect();
-      const originSec = pxToSec(e.clientX - rect.left, viewport);
+      const originSec = pxToSec(clientX - rect.left, viewport);
       dragStateRef.current = {
         originSec,
         rectLeft: rect.left,
@@ -822,6 +850,40 @@ function isAbort(err: unknown): boolean {
       setDraftSelection({ start: originSec, end: originSec });
     },
     [viewport, onSelectionChange, onSeek],
+  );
+
+  /**
+   * When a finger last pressed this surface. A browser follows a tap with
+   * the mouse events a mouse would have made, for pages that know only
+   * mice; the touch path below has already handled the tap, so those are
+   * ignored for a moment after it.
+   */
+  const lastTouchRef = useRef(0);
+
+  const beginSelection = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      // Only left-click; Shift is reserved for multi-select later.
+      if (e.button !== 0) return;
+      if (Date.now() - lastTouchRef.current < 800) return;
+      startSelectionAt(e.clientX);
+    },
+    [startSelectionAt],
+  );
+
+  /**
+   * The same press, from a finger (the Android app). A drag along the lane
+   * selects and a tap places the playhead, as with a mouse. The surface
+   * lets the browser keep vertical drags (`touch-action: pan-y`), so the
+   * lanes still scroll under a finger; a drag it takes over arrives here as
+   * a cancel and selects nothing.
+   */
+  const beginTouchSelection = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.pointerType !== "touch" || !e.isPrimary) return;
+      lastTouchRef.current = Date.now();
+      startSelectionAt(e.clientX);
+    },
+    [startSelectionAt],
   );
 
   /**
@@ -840,6 +902,9 @@ function isAbort(err: unknown): boolean {
   const maybeSnap = useCallback(
     (range: Selection): Selection => {
       if (!snapToZero) return range;
+      // Drawn from peaks (the Android app): there are no samples here to
+      // find a crossing in, only the outline, so the range is left as drawn.
+      if (peaksOnlyRef.current) return range;
       const ws = wsRef.current;
       if (!ws) return range;
       if (!(duration > 0) || range.end > duration + 1e-6) return range;
@@ -856,7 +921,7 @@ function isAbort(err: unknown): boolean {
 
   useEffect(() => {
     if (!draftSelection) return;
-    const onMove = (e: MouseEvent) => {
+    const onMove = (e: { clientX: number }) => {
       const drag = dragStateRef.current;
       if (!drag) return;
       const px = clamp(e.clientX - drag.rectLeft, 0, drag.rectWidth);
@@ -884,11 +949,40 @@ function isAbort(err: unknown): boolean {
         onSelectionChange?.(maybeSnap(final));
       }
     };
+    // The finger's version of the three above. A second finger is a pinch,
+    // which is the timeline's zoom and not a selection, and a cancel is the
+    // browser taking the drag for a scroll: both drop the draft.
+    const onTouchMove = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && e.isPrimary) onMove(e);
+    };
+    const onTouchUp = (e: PointerEvent) => {
+      if (e.pointerType !== "touch" || !e.isPrimary) return;
+      lastTouchRef.current = Date.now();
+      onUp();
+    };
+    const dropDraft = () => {
+      dragStateRef.current = null;
+      setDraftSelection(null);
+    };
+    const onTouchCancel = (e: PointerEvent) => {
+      if (e.pointerType === "touch") dropDraft();
+    };
+    const onSecondFinger = (e: PointerEvent) => {
+      if (e.pointerType === "touch" && !e.isPrimary) dropDraft();
+    };
     window.addEventListener("mousemove", onMove);
     window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onTouchMove);
+    window.addEventListener("pointerup", onTouchUp);
+    window.addEventListener("pointercancel", onTouchCancel);
+    window.addEventListener("pointerdown", onSecondFinger);
     return () => {
       window.removeEventListener("mousemove", onMove);
       window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onTouchMove);
+      window.removeEventListener("pointerup", onTouchUp);
+      window.removeEventListener("pointercancel", onTouchCancel);
+      window.removeEventListener("pointerdown", onSecondFinger);
     };
   }, [draftSelection, viewport, onSelectionChange, onSeek, maybeSnap]);
 
@@ -1102,10 +1196,14 @@ function isAbort(err: unknown): boolean {
         // the assistant selects a range by words ("select 10 to 20 seconds").
         role="presentation"
         onMouseDown={beginSelection}
+        onPointerDown={beginTouchSelection}
         style={{
           flex: 1,
           minWidth: 0,
           position: "relative",
+          // A finger dragged along the lane selects; dragged across it,
+          // the browser scrolls the lanes. No effect on a mouse.
+          touchAction: "pan-y",
           // The lane's time surface: the same left edge and width as
           // every other row's, so one axis maps them all. No horizontal
           // padding, which the ruler and the clip rows never had, and
@@ -1606,7 +1704,11 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
 
       try {
         void to
-          .load(convertFileSrc(mixPath))
+          // The mix players are heard, never seen. On Android they are
+          // given a flat outline, so WaveSurfer streams the file through
+          // its audio element and does not also fetch and decode all of it
+          // (the length still comes from the element).
+          .load(convertFileSrc(mixPath), isAndroid() ? [new Float32Array(2)] : undefined)
           .then(() => {
             if (superseded) return;
             // Where the outgoing side is *now*, not where it was when the
@@ -1821,6 +1923,66 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
       el.addEventListener("wheel", handler, { passive: false });
       return () => el.removeEventListener("wheel", handler);
     }, [zoom, onZoomChange, panBy, viewport.widthPx]);
+
+    /**
+     * Two fingers on the timeline: pinch to zoom, and move both to pan
+     * (the Android app; a mouse has Ctrl+wheel above). The zoom steps from
+     * the density on screen when the second finger landed, scaled by how
+     * far apart the fingers now are, so the gesture tracks them.
+     *
+     * The latest density and pan are read through refs: the listeners are
+     * attached once, and a pinch outlives many renders.
+     */
+    const pinchView = useRef({ pxPerSec: 0, panBy, onZoomChange });
+    pinchView.current = { pxPerSec: viewport.pxPerSec, panBy, onZoomChange };
+    useEffect(() => {
+      const el = rootRef.current;
+      if (!el) return;
+      const fingers = new Map<number, { x: number; y: number }>();
+      let pinch: { distance: number; pxPerSec: number; midX: number } | null = null;
+      const spread = () => {
+        const [a, b] = [...fingers.values()];
+        return { distance: Math.hypot(a.x - b.x, a.y - b.y), midX: (a.x + b.x) / 2 };
+      };
+      const down = (e: PointerEvent) => {
+        if (e.pointerType !== "touch") return;
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (fingers.size === 2) {
+          const { distance, midX } = spread();
+          const pxPerSec = pinchView.current.pxPerSec;
+          pinch = distance > 0 && pxPerSec > 0 ? { distance, pxPerSec, midX } : null;
+        } else {
+          pinch = null;
+        }
+      };
+      const move = (e: PointerEvent) => {
+        if (e.pointerType !== "touch" || !fingers.has(e.pointerId)) return;
+        fingers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (!pinch || fingers.size !== 2) return;
+        e.preventDefault();
+        const { distance, midX } = spread();
+        const next = clamp(pinch.pxPerSec * (distance / pinch.distance), 1, 2000);
+        pinchView.current.onZoomChange?.(next);
+        if (midX !== pinch.midX) {
+          pinchView.current.panBy(pinch.midX - midX);
+          pinch.midX = midX;
+        }
+      };
+      const up = (e: PointerEvent) => {
+        fingers.delete(e.pointerId);
+        pinch = null;
+      };
+      el.addEventListener("pointerdown", down);
+      el.addEventListener("pointermove", move, { passive: false });
+      el.addEventListener("pointerup", up);
+      el.addEventListener("pointercancel", up);
+      return () => {
+        el.removeEventListener("pointerdown", down);
+        el.removeEventListener("pointermove", move);
+        el.removeEventListener("pointerup", up);
+        el.removeEventListener("pointercancel", up);
+      };
+    }, []);
 
     /**
      * The zoom level the ± buttons should step from.
@@ -2095,6 +2257,9 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
           </div>
         ) : null}
         <div
+          // On Android the row scrolls sideways under a finger and drops
+          // its heading (styles.css): a phone is narrower than the buttons.
+          className="timeline-toolbar"
           style={{
             display: "flex",
             alignItems: "center",
@@ -2118,7 +2283,7 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
           >
             Timeline
           </h2>
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div className="timeline-toolbar-actions" style={{ display: "flex", alignItems: "center", gap: 8 }}>
             {/*
               Play/pause on screen (#425): the transport was reachable
               only from the keyboard. The same toggle Space calls, and it
@@ -2296,16 +2461,20 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
             >
               ↺
             </button>
-            <button
-              type="button"
-              data-testid="spectrogram-btn"
-              onClick={() => onSpectrogramChange?.(!spectrogramEnabled)}
-              data-active={spectrogramEnabled ? "true" : "false"}
-              className="btn-tool text-xs px-2 py-1 rounded transition"
-              title="Toggle spectrogram"
-            >
-              Spec
-            </button>
+            {/* A spectrogram is worked out from the decoded samples, which the
+                Android app does not hold (its lanes draw from peaks). */}
+            {isAndroid() ? null : (
+              <button
+                type="button"
+                data-testid="spectrogram-btn"
+                onClick={() => onSpectrogramChange?.(!spectrogramEnabled)}
+                data-active={spectrogramEnabled ? "true" : "false"}
+                className="btn-tool text-xs px-2 py-1 rounded transition"
+                title="Toggle spectrogram"
+              >
+                Spec
+              </button>
+            )}
             <span
               style={{
                 fontFamily: "var(--font-mono)",

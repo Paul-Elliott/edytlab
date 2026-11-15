@@ -54,6 +54,30 @@ export async function pickAudioFiles(
 }
 
 /**
+ * What the Android picker is asked to show. The dialog plugin passes an
+ * entry with a `/` through as a MIME type, and Android's picker filters by
+ * MIME type, not by extension. `application/ogg` is how many file managers
+ * report `.ogg` and `.opus`. A file one of them reports as something else
+ * still loads if it is picked: the decoder goes by the bytes.
+ */
+const ANDROID_AUDIO_TYPES = ["audio/*", "application/ogg"];
+
+/**
+ * Show the Android system picker for audio. Returns `content://` addresses
+ * (not paths: Android has none to give), which `importAudio` copies into
+ * the open project and loads. `null` if the person cancelled.
+ */
+export async function pickAudioUris(): Promise<string[] | null> {
+  const result = await open({
+    multiple: true,
+    directory: false,
+    filters: [{ name: "Audio", extensions: ANDROID_AUDIO_TYPES }],
+  });
+  if (!result) return null;
+  return Array.isArray(result) ? result : [result];
+}
+
+/**
  * Show the OS picker for a *project* directory (#156).
  *
  * A project is a folder — the store lives in `.audiograph/` inside it —

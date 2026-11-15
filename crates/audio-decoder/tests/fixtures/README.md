@@ -45,8 +45,8 @@ ffmpeg -y -f lavfi -i "aevalsrc=0.5*sin(2*PI*440*t):s=44100:d=0.5" -c:a libmp3la
 ffmpeg -y -f lavfi -i "aevalsrc=0.98*sgn(sin(2*PI*220*t)):s=44100:d=0.3" -c:a libvorbis -q:a 4 -map_metadata -1 -fflags +bitexact -flags:a +bitexact square_220_full_scale_mono_44100.ogg
 
 # AAC-LC in M4A (ffmpeg's native `aac` encoder), mono 44.1 kHz and stereo 48 kHz.
-# Decoded by the operating system on macOS and Windows (tests/formats.rs); refused
-# on Linux, which has no system decoder (tests/unsupported.rs). ffmpeg has no
+# Decoded by the operating system on macOS, Windows and Android (tests/formats.rs);
+# refused on Linux, which has no system decoder (tests/unsupported.rs). ffmpeg has no
 # HE-AAC encoder (`libfdk_aac` is not built into the Ubuntu package), so there is
 # no HE-AAC fixture. The stereo file uses `-aac_coder fast -aac_pns 0`: with the
 # default coder this two-tone signal decodes with peaks of 0.71 and 0.78 (ffmpeg's
@@ -67,7 +67,7 @@ two rows, `tests/pinned_output.rs`, which also pins every file's exact samples):
 | `tone_440_mono_44100.flac` | 44,100 | 1 | 440 Hz | exactly 22,050 frames, each sample within 1.5 LSB |
 | `tone_440_mono_48000.opus` | 48,000 | 1 | 440 Hz | exactly 24,000 frames (`ffprobe` `duration_ts` 24,312 less 312 pre-skip) |
 | `tones_440_880_stereo_48000.opus` | 48,000 | 2 | 440 / 880 Hz | exactly 46,560 frames (`duration_ts` 46,872 less 312), the last packet trimmed |
-| `tone_440_mono_44100.m4a` | 44,100 | 1 | 440 Hz | exactly 22,050 frames on macOS and Windows (the edit list: 1,024 frames of priming skipped, `ffprobe` `duration_ts` 22,050) |
+| `tone_440_mono_44100.m4a` | 44,100 | 1 | 440 Hz | exactly 22,050 frames on macOS and Windows (the edit list: 1,024 frames of priming skipped, `ffprobe` `duration_ts` 22,050); on Android 10 and later the same by the arithmetic in `src/os_aac/android_trim.rs`, not yet measured on a device |
 | `tones_440_880_stereo_48000.m4a` | 48,000 | 2 | 440 / 880 Hz | exactly 24,000 frames (`duration_ts` 24,000) |
 | `tone_440_mono_44100.mp3` | 44,100 | 1 | 440 Hz | 24,192 frames (21 MPEG frames of 1,152): the 22,050 encoded with the LAME tag's delay and padding kept |
 | `square_220_full_scale_mono_44100.ogg` | 44,100 | 1 | 220 Hz square | 13,312 frames, clamped to full scale |

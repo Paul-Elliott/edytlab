@@ -42,7 +42,23 @@ export default defineConfig({
     // top-level `use.reducedMotion`.)
     contextOptions: { reducedMotion: "reduce" },
   },
-  projects: [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
+  // The desktop window, and the Android app's two layouts (#android). The
+  // Android projects run the same production build with a device's user
+  // agent, viewport and touch input: the app reads the platform from the
+  // user agent (`src/lib/platform.ts`), so they reach the Android paths of
+  // the shipped bundle. Their specs are the `mobile-*` files; every other
+  // spec sets a desktop viewport and drives a mouse, and stays on
+  // `chromium`. A phone is one pane with a tab bar; a tablet held sideways
+  // has the desktop's two panes.
+  projects: [
+    { name: "chromium", use: { ...devices["Desktop Chrome"] }, testIgnore: /mobile-.*\.spec\.ts/ },
+    { name: "phone", use: { ...devices["Pixel 7"] }, testMatch: /mobile-.*\.spec\.ts/ },
+    {
+      name: "tablet",
+      use: { ...devices["Galaxy Tab S9 landscape"] },
+      testMatch: /mobile-.*\.spec\.ts/,
+    },
+  ],
   webServer: {
     command:
       `pnpm exec vite build ${E2E_VITE} && ` +
