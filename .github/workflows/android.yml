@@ -142,6 +142,14 @@ jobs:
         with:
           node-version: 22
 
+      # The emulator makes its data partition as a file on the runner, and
+      # refuses to start without room for all of it. The image's toolchains
+      # this job never uses are the quickest room to make.
+      - name: Free disk space for the emulator
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
       # Hardware acceleration for the emulator, as the action's readme asks.
       - name: Enable KVM
         run: |
@@ -157,7 +165,8 @@ jobs:
           target: google_apis
           profile: pixel_7
           ram-size: 4096M
-          disk-size: 6G
+          # The app, its unpacked libraries and a few seconds of audio.
+          disk-size: 3G
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           script: bash scripts/ci/android-smoke.sh apk-out
