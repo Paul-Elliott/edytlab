@@ -51,6 +51,7 @@ pnpm --filter @edytlab/desktop tauri android build --apk --debug --target aarch6
 | M4A by AudioToolbox or Media Foundation | NDK MediaExtractor and MediaCodec | `audio-decoder/src/os_aac/android.rs`, `docs/agents/formats.md` |
 | Lanes decode each file in the webview | Lanes draw from `waveform_peaks` and the mix players stream. No snap-to-zero and no spectrogram, which need samples | `peaks.rs`, `Timeline.tsx` |
 | Record | The same recorder (cpal on AAudio), after `ensure_microphone`. A take is saved into the project's `imports/` | `android.rs`, `EdytlabPlugin` permissions |
+| The downloader and the stem cache lock a file with `std::fs::File::lock` | `flock` called directly. The pinned toolchain does not build the standard library's file locks for Android: they compile and answer "not supported" on a device | `ml-pipeline/src/file_lock.rs` |
 | MCP servers over stdio | Refused with a reason: Android runs no programs for an app. HTTP servers work | `crates/mcp/src/transport.rs` |
 | ChatGPT plan sign-in | Not offered. Its loopback redirect is lost when Android freezes the app behind the browser | `Settings.tsx` |
 | Native menu, drag and drop, Ctrl shortcuts | A compact header, a menu sheet, and on-screen controls for undo, redo, delete and cut | `components/mobile/` |
@@ -78,6 +79,6 @@ No test in this repo runs on a physical device. What stands in:
 - **Host tests** cover the path logic (`android.rs`, `resources.rs`, `peaks.rs`), the keychain adapter with a fake store, the M4A trim arithmetic, the memory floor and the runtime's library lookup.
 - **Cross-compiling** is the type check of the Android-only Rust: `cargo check --target aarch64-linux-android` for the crates, and a `tauri android build` for the app crate, which needs the CLI's environment.
 - **Playwright `phone` and `tablet` projects** (`e2e/mobile-*.spec.ts`) run the production bundle with an Android user agent, a device viewport and real touch events against the fake backend: layout, sheets, import, exports, back, touch selection, pinch, transcript cut, recording permission, peaks.
-- **The emulator smoke test** (`scripts/ci/android-smoke.sh` and `.mjs`, run by `android.yml`) installs the APK and calls the real commands over the WebView's debugging socket: resources, the ONNX Runtime library, a key that survives a force-stop, WAV and M4A import, playback from the asset protocol, export, a recording, Back.
+- **The emulator smoke test** (`scripts/ci/android-smoke.sh` and `.mjs`, run by `android.yml`) installs the APK and calls the real commands over the WebView's debugging socket: resources, the ONNX Runtime library, a model download from Hugging Face that is still there after a force-stop, a key that survives one too, WAV and M4A import, playback from the asset protocol, export, a recording, Back.
 
 Still needing a device: stem separation and transcription speed and memory, recording quality and latency, the system picker with real file managers, and how the layout sits around a notch.

@@ -32,7 +32,7 @@
 //!   edytlab is not a single-instance app: nothing stops a second window,
 //!   or the CLI, from running against the same data directory, and two
 //!   fetches writing one `.part` corrupt it. So a fetch holds an OS lock
-//!   (`flock`, or `LockFileEx` on Windows, through `std::fs::File::try_lock`) on
+//!   (`flock`, or `LockFileEx` on Windows, through [`crate::file_lock`]) on
 //!   `<root>/<id>.lock` from before it touches the artifact until it
 //!   returns; another fetch of the same artifact, in this process or
 //!   another, waits and then finds the cache already valid. In-process
@@ -567,7 +567,7 @@ impl Drop for ArtifactLock {
         // Closing the file releases the lock as well. Asking first makes
         // the release immediate; on Windows the system may otherwise take
         // its time over a closed handle's lock.
-        let _ = self.file.unlock();
+        let _ = crate::file_lock::unlock(&self.file);
     }
 }
 
@@ -602,7 +602,7 @@ fn lock_artifact(
         .open(&path)
         .map_err(lock_error)?;
     loop {
-        match file.try_lock() {
+        match crate::file_lock::try_lock(&file) {
             Ok(()) => {
                 return Ok(ArtifactLock {
                     file,

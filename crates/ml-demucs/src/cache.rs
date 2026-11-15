@@ -206,7 +206,7 @@ impl Pending {
             .truncate(false)
             .open(self.dest.with_file_name(name))?;
         loop {
-            match file.lock() {
+            match ml_pipeline::file_lock::lock(&file) {
                 Ok(()) => return Ok(file),
                 Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(e) => return Err(e.into()),

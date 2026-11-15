@@ -163,6 +163,28 @@ const phases = {
       assert(/bundled/i.test(text), `the runtime is not the bundled one: ${text}`);
       return text;
     }],
+    // The smallest of the three models, from Hugging Face, all the way to
+    // "ready": the lock file, the writes into the app's storage, the digest
+    // check and the rename. A first device test found the lock refused on
+    // Android before a byte was asked for, which no host test could see.
+    ["a model downloads into the app's storage", async (cdp) => {
+      const model = "speaker-diarization";
+      let status;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        status = await invoke(cdp, "download_ml_model", { model });
+        for (let i = 0; i < 300 && status.state === "downloading"; i++) {
+          await sleep(1000);
+          status = await invoke(cdp, "ml_model_status", { model });
+        }
+        // One more try covers a dropped connection; a fault in the app
+        // fails the second time as it did the first.
+        if (status.state !== "failed") break;
+        console.log(`     attempt ${attempt}: ${status.reason}`);
+      }
+      assert(status.state === "ready", `the download ended as ${JSON.stringify(status)}`);
+      assert(status.bytes > 1_000_000, `the model on disk is ${status.bytes} bytes`);
+      return `${model}, ${(status.bytes / 1e6).toFixed(1)} MB`;
+    }],
     ["an API key is saved to the Android Keystore", async (cdp) => {
       const landed = await invoke(cdp, "set_api_key_for", { provider: "anthropic", key: SMOKE_KEY });
       assert(landed?.persistent === true, `the save answered ${JSON.stringify(landed)}`);
@@ -291,6 +313,10 @@ const phases = {
       assert(tracks.length === 2, `the project reopened with ${tracks.length} tracks`);
       const exports = await invoke(cdp, "list_exports");
       assert(exports.some((f) => f.name === "smoke.wav"), "the export is gone");
+    }],
+    ["the downloaded model is still there", async (cdp) => {
+      const status = await invoke(cdp, "ml_model_status", { model: "speaker-diarization" });
+      assert(status.state === "ready", `after a restart the model is ${JSON.stringify(status)}`);
     }],
   ],
 };
