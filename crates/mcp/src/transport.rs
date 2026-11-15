@@ -125,6 +125,17 @@ impl StdioClient {
         env: &HashMap<String, String>,
         mut resolve_secret: impl FnMut(&str) -> Option<String>,
     ) -> Result<Self> {
+        // Android has no `npx`, `uvx` or shell for a server to run in, and an
+        // app may not start programs of its own choosing there. Say so in
+        // words the Settings list can show, in place of a spawn error that
+        // names a missing file.
+        if cfg!(target_os = "android") {
+            return Err(McpError::InvalidConfig(
+                "this server starts a program on the computer, which the Android app cannot do; \
+                 use a remote (HTTP) server"
+                    .to_string(),
+            ));
+        }
         let mut cmd = Command::new(command);
         cmd.args(args);
         for (k, v) in env {

@@ -3,13 +3,16 @@
 //! AAC decoders need a patent licence from Via LA for "manufacturers or
 //! developers of end-user encoder and/or decoder products", and the project
 //! has none, so no AAC decoder is built into the app: not symphonia's `aac`
-//! and `isomp4`, not FFmpeg, fdk-aac or faad2. macOS and Windows ship a
-//! decoder of their own, licensed by Apple and Microsoft, and the app asks
-//! the system to decode (owner's decision on issue #764):
+//! and `isomp4`, not FFmpeg, fdk-aac or faad2. macOS, Windows and Android ship
+//! a decoder of their own, licensed by Apple, Microsoft and the device's
+//! maker, and the app asks the system to decode (owner's decision on issue
+//! #764):
 //!
 //! - macOS: AudioToolbox, Extended Audio File Services (`macos`).
 //! - Windows: Media Foundation's Source Reader and AAC decoder
 //!   (`media_foundation`).
+//! - Android: the NDK's `AMediaExtractor` and `AMediaCodec` (`android`, with
+//!   the arithmetic of what it trims in `android_trim`).
 //! - Linux and everything else: no system decoder, so the file is refused
 //!   with [`crate::DecodeError::UnsupportedFormat`] as before.
 //!
@@ -19,21 +22,32 @@
 
 use std::path::Path;
 
+#[cfg(target_os = "android")]
+mod android;
+// Arithmetic only, so its tests run on every platform.
+#[cfg(any(target_os = "android", test))]
+mod android_trim;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(target_os = "windows")]
 mod media_foundation;
 
+#[cfg(target_os = "android")]
+use android::decode_path;
 #[cfg(target_os = "macos")]
 use macos::decode_path;
 #[cfg(target_os = "windows")]
 use media_foundation::decode_path;
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use crate::{DecodedAudio, Result};
 
 /// Whether this platform has a system decoder to hand M4A files to.
-pub(crate) const AVAILABLE: bool = cfg!(any(target_os = "macos", target_os = "windows"));
+pub(crate) const AVAILABLE: bool = cfg!(any(
+    target_os = "macos",
+    target_os = "windows",
+    target_os = "android"
+));
 
 /// Whether the start of a file says it is ISO base media: a box size, then
 /// `ftyp` (M4A, MP4, MOV, 3GP).
@@ -42,15 +56,17 @@ pub(crate) fn is_m4a(head: &[u8]) -> bool {
 }
 
 /// Decode the M4A/MP4 file at `path` with the system decoder.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 pub(crate) fn decode_m4a(path: &Path) -> Result<DecodedAudio> {
     decode_path(path)
 }
 
-/// Decode M4A/MP4 bytes already in memory. Both system decoders open files,
+/// Decode M4A/MP4 bytes already in memory. Every system decoder opens a file,
 /// so the bytes go to a file of their own in the temporary folder for the
-/// length of the call.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+/// length of the call. (On Android that folder is the app's cache: the
+/// activity sets `TMPDIR` to it at start-up, because the default there is not
+/// writable by an app.)
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 pub(crate) fn decode_m4a_bytes(bytes: &[u8]) -> Result<DecodedAudio> {
     use std::io::Write;
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -88,12 +104,12 @@ pub(crate) fn decode_m4a_bytes(bytes: &[u8]) -> Result<DecodedAudio> {
 /// passes them, so the check does not consume a path that can be read only
 /// once (a pipe); an M4A is then decoded by reopening `path`, which a pipe
 /// cannot be.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 pub(crate) fn decode_file_if_m4a(path: &Path, head: &[u8]) -> Option<Result<DecodedAudio>> {
     is_m4a(&head[..head.len().min(crate::SNIFF_BYTES)]).then(|| decode_m4a(path))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 pub(crate) fn decode_file_if_m4a(
     _path: &Path,
     _head: &[u8],
@@ -102,12 +118,12 @@ pub(crate) fn decode_file_if_m4a(
 }
 
 /// Like [`decode_file_if_m4a`], for bytes already in memory.
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 pub(crate) fn decode_bytes_if_m4a(bytes: &[u8]) -> Option<Result<DecodedAudio>> {
     is_m4a(&bytes[..bytes.len().min(crate::SNIFF_BYTES)]).then(|| decode_m4a_bytes(bytes))
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 pub(crate) fn decode_bytes_if_m4a(_bytes: &[u8]) -> Option<crate::Result<crate::DecodedAudio>> {
     None
 }

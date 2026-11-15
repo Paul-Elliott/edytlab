@@ -1,8 +1,8 @@
 //! Formats the decoder does not open (#764), and what it says about them.
 //!
-//! M4A/AAC is opened only by the operating system's own decoder (macOS and
-//! Windows), because an AAC decoder built into the app would need a patent
-//! licence; where there is none (Linux) it is refused. It used to come back as
+//! M4A/AAC is opened only by the operating system's own decoder (macOS,
+//! Windows and Android), because an AAC decoder built into the app would need
+//! a patent licence; where there is none (Linux) it is refused. It used to come back as
 //! "corrupt or unrecognised audio data" or a bare "unsupported codec", which
 //! sends a person looking for a fault in a good file. It now names the format
 //! and says what to do. (Opus is decoded since it got a codec of its own; the
@@ -12,9 +12,9 @@ use audio_decoder::{decode_bytes, supported_extensions, DecodeError};
 
 mod support;
 
-// Linux has no system AAC decoder, so these three refuse M4A. On macOS and
-// Windows the same files decode (tests/formats.rs).
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+// Linux has no system AAC decoder, so these three refuse M4A. On macOS,
+// Windows and Android the same files decode (tests/formats.rs).
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 mod without_an_os_decoder {
     use audio_decoder::{decode_bytes, decode_file, DecodeError};
 
@@ -81,7 +81,11 @@ fn the_supported_list_leaves_out_what_does_not_decode() {
     // M4A is listed exactly where the system decodes it.
     assert_eq!(
         listed.contains(&"m4a"),
-        cfg!(any(target_os = "macos", target_os = "windows")),
+        cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "android"
+        )),
         "m4a is listed where the operating system decodes it, and nowhere else"
     );
 }

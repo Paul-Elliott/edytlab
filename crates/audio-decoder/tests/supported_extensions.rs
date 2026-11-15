@@ -45,7 +45,8 @@ fn every_listed_extension_decodes_a_file_with_that_extension() {
 }
 
 /// A platform that lists an OS-decoded extension must have a fixture for it, so
-/// the macOS and Windows legs of CI decode a real file for each.
+/// the macOS and Windows legs of CI decode a real file for each. (Android
+/// lists it too and has no leg of CI that runs these tests.)
 #[test]
 fn every_os_decoded_extension_has_a_fixture_on_every_platform() {
     for ext in OS_DECODER_EXTENSIONS {
@@ -67,7 +68,11 @@ fn the_extensions_are_lower_case_and_have_no_dot() {
 fn m4a_is_listed_on_exactly_the_platforms_that_decode_it() {
     assert_eq!(
         OS_DECODER_AVAILABLE,
-        cfg!(any(target_os = "macos", target_os = "windows"))
+        cfg!(any(
+            target_os = "macos",
+            target_os = "windows",
+            target_os = "android"
+        ))
     );
     for ext in OS_DECODER_EXTENSIONS {
         assert!(
@@ -146,13 +151,18 @@ fn the_file_picker_offers_exactly_the_supported_extensions() {
 }
 
 /// The window decides from the user agent whether the system decodes M4A.
-/// Only macOS and Windows may say yes, as the decoder does.
+/// Only macOS, Windows and Android may say yes, as the decoder does, and an
+/// iPhone or iPad, whose user agent says "like Mac OS X", must not.
 #[test]
 fn the_window_offers_m4a_only_on_the_platforms_the_decoder_has_a_system_decoder_for() {
     let src = read_window_source("lib/importFormats.ts");
     assert!(
-        src.contains("/Mac|Win/.test(platform)"),
-        "importFormats.ts must key M4A on macOS and Windows"
+        src.contains("/Mac|Win|Android/.test(platform)"),
+        "importFormats.ts must key M4A on macOS, Windows and Android"
+    );
+    assert!(
+        src.contains("/iPhone|iPad/.test(platform)"),
+        "importFormats.ts must leave out iOS, which has no backend"
     );
 }
 

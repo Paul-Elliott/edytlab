@@ -1,6 +1,8 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <!-- Base application theme. -->
     <style name="Theme.edytlab_desktop" parent="Theme.Material3.DayNight.NoActionBar">
-        <!-- Customize your theme here. -->
+        <!-- The app's own background (the bg colour in styles.css), behind the system
+             bars and before the first frame, so launch does not flash white. -->
+        <item name="android:windowBackground">@color/app_background</item>
     </style>
 </resources>

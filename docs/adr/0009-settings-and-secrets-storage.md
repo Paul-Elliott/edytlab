@@ -203,3 +203,23 @@ other keys and a removal in one is an error; two stores over one keychain keep e
 an unreadable settings file is an error; a leftover per-slot item does not override a marked item; an
 MCP slot resolves; a byte cap is met by the bytes; a failed read is remembered. Then the owner's check on a
 Mac: at most one prompt at the first launch after the migration.
+
+## Addendum, 2026-11-14: Android
+
+The Android app keeps this decision and changes only what holds the item. The `keyring` crate has no
+Android store: built for Android it compiles and keeps every entry in an in-memory mock, so a key
+saved there was gone at the next launch while the module still reported the store as durable. On
+Android the item is therefore held by a store the app installs at startup
+(`ai::keychain::install_platform_store`, a `SecretStore` of bytes by account name), which the module
+reaches through the same `Slot` the OS keychains sit behind; no third-party keystore crate is
+involved. The app's store is its own Kotlin plugin: the bytes are encrypted with AES-256-GCM under a
+key that never leaves the Android Keystore and needs no user authentication, and the nonce and
+ciphertext are written to a file per account in the app's no-backup storage, which Android leaves out
+of backups and of the copy to a new phone (the key does not travel, so a copied file could never be
+read). It is still one `secrets` item, read once and cached, rewritten under the one lock, and the
+settings file is unchanged. There is no second store, so the kernel-keyring fallback and its merge
+do not apply. A secret that is saved and cannot be decrypted is an error and never "nothing stored",
+as a locked keychain is, and so is a call made before the store is installed. Persistence is
+reported as durable only after the store has saved a value and read it back. The tests cover the
+module over a store in memory; no test runs on a device, so the Kotlin half is checked by saving a
+key in the app on a phone, closing the app and opening it again.

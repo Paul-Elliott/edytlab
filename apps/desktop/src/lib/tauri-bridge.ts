@@ -1725,3 +1725,73 @@ export interface PluginInstallResult {
 export async function installPlugin(source: string): Promise<PluginInstallResult> {
   return invoke<PluginInstallResult>("install_plugin", { source });
 }
+
+// -----------------------------------------------------------------------------
+// Android: the device, projects in the app's storage, picker import, exports
+// (src-tauri/src/android.rs)
+// -----------------------------------------------------------------------------
+
+/** What `device_info` answers. */
+export interface DeviceInfo {
+  /** True in the Android app. */
+  android: boolean;
+  /** The device's memory in bytes, when the platform says. */
+  total_ram_bytes: number | null;
+  /** "Google Pixel 9". Android only. */
+  model: string | null;
+  /**
+   * Whether stem separation is offered here: always on a desktop, and on
+   * Android only on a device with the memory the model needs (8 GB).
+   */
+  stems_supported: boolean;
+}
+
+export const deviceInfo = (): Promise<DeviceInfo> => invoke<DeviceInfo>("device_info");
+
+/** The projects kept in the app's own storage, most recently opened first. */
+export const listManagedProjects = (): Promise<RecentProject[]> =>
+  invoke<RecentProject[]>("list_managed_projects");
+
+/**
+ * Make an empty folder for a project called `name` in the app's storage.
+ * Answers its path, which `openProject` (a new project) or `saveProjectAs`
+ * (a copy of the open one) takes.
+ */
+export const createManagedProject = (name: string): Promise<string> =>
+  invoke<string>("create_managed_project", { name });
+
+/** Delete a project kept in the app's storage. Not the open one. */
+export const deleteManagedProject = (path: string): Promise<RecentProject[]> =>
+  invoke<RecentProject[]>("delete_managed_project", { path });
+
+/**
+ * Load the files the Android picker named. Each `content://` address is
+ * copied into the open project and loaded as `batchLoad` loads a path.
+ */
+export const importAudio = (uris: string[]): Promise<BatchLoadResult> =>
+  invoke<BatchLoadResult>("import_audio", { uris });
+
+/** One file in the app's exports folder. */
+export interface ExportFile {
+  name: string;
+  bytes: number;
+  /** Milliseconds since 1970. */
+  modified_ms: number;
+}
+
+/** A free path in the app's exports folder for a file called `name`. */
+export const exportDestination = (name: string): Promise<string> =>
+  invoke<string>("export_destination", { name });
+
+export const listExports = (): Promise<ExportFile[]> => invoke<ExportFile[]>("list_exports");
+
+export const deleteExport = (name: string): Promise<ExportFile[]> =>
+  invoke<ExportFile[]>("delete_export", { name });
+
+/** Open the system share sheet for one export. */
+export const shareExport = (name: string): Promise<void> =>
+  invoke<void>("share_export", { name });
+
+/** Write one export into the document the save dialog created at `uri`. */
+export const saveExportTo = (name: string, uri: string): Promise<void> =>
+  invoke<void>("save_export_to", { name, uri });

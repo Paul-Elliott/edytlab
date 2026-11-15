@@ -298,3 +298,67 @@ fn the_windows_library_lists_the_visual_cpp_runtime_it_needs() {
         );
     }
 }
+
+/// The Android app takes the same runtime from Microsoft's Maven package
+/// (`android` in the manifest), and its Gradle file names the artifact and
+/// version on its own line. Three copies of one version: the pin, the
+/// Android pin and the Gradle dependency. This holds them equal, and checks
+/// the Android pin's shape as the desktop ones are checked.
+#[test]
+fn the_android_package_is_the_pinned_version_and_gradle_agrees() {
+    let m = manifest();
+    let version = text(&m, "version", "the manifest");
+    let android = m
+        .get("android")
+        .expect("the manifest needs an `android` object");
+
+    assert_eq!(
+        text(android, "version", "android"),
+        version,
+        "the Android package must be the version the desktops pin"
+    );
+    let artifact = text(android, "artifact", "android");
+    assert_eq!(artifact, "com.microsoft.onnxruntime:onnxruntime-android");
+    assert_eq!(
+        text(android, "url", "android"),
+        format!(
+            "https://repo.maven.apache.org/maven2/com/microsoft/onnxruntime/onnxruntime-android/\
+             {version}/onnxruntime-android-{version}.aar"
+        )
+    );
+    assert!(is_sha256(text(android, "aar_sha256", "android")));
+    // What `runtime::ensure` looks for on Android is a `.so`, whatever
+    // platform this test runs on.
+    assert_eq!(text(android, "install_as", "android"), "libonnxruntime.so");
+
+    let libraries = android
+        .get("libraries")
+        .and_then(Value::as_object)
+        .expect("android needs a `libraries` object");
+    // The ABI phones and tablets run, and the one the CI emulator runs.
+    for abi in ["arm64-v8a", "x86_64"] {
+        let digest = libraries
+            .get(abi)
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("android.libraries needs {abi}"));
+        assert!(is_sha256(digest), "{abi}: not a SHA-256: {digest}");
+    }
+
+    let gradle_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("apps/desktop/src-tauri/gen/android/app/build.gradle.kts");
+    let gradle = std::fs::read_to_string(&gradle_path)
+        .unwrap_or_else(|e| panic!("cannot read {}: {e}", gradle_path.display()));
+    let dependency = format!("implementation(\"{artifact}:{version}\")");
+    assert!(
+        gradle.contains(&dependency),
+        "{} must hold the line {dependency}",
+        gradle_path.display()
+    );
+    assert_eq!(
+        gradle.matches("com.microsoft.onnxruntime:").count(),
+        1,
+        "one ONNX Runtime dependency, so there is one version to keep in step"
+    );
+}

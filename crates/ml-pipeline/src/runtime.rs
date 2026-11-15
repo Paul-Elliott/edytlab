@@ -276,12 +276,58 @@ pub fn candidate_paths() -> Vec<PathBuf> {
 }
 
 fn tagged_candidate_paths() -> Vec<(PathBuf, Origin)> {
-    let exe = std::env::current_exe().ok();
+    // An Android app has no executable of its own: `current_exe()` is the
+    // system's `app_process`, in a folder no app library is ever in. Only
+    // the folder the app registers is searched there (see
+    // [`loaded_library_dir`]).
+    let exe = if cfg!(target_os = "android") {
+        None
+    } else {
+        std::env::current_exe().ok()
+    };
     tagged_candidates(
         std::env::var_os("ORT_DYLIB_PATH").as_deref(),
         bundle_dir(),
         exe.as_deref().and_then(Path::parent),
     )
+}
+
+/// The folder a library that is already loaded into this process was loaded
+/// from, found by its file name in `/proc/self/maps`. `None` when no mapped
+/// file has that name, or on a platform with no such file.
+///
+/// This is how the Android app finds the ONNX Runtime library. Android
+/// unpacks an app's native libraries into one folder at install (the
+/// package's `nativeLibraryDir`, when it is built with
+/// `useLegacyPackaging`), and the app's own library, which is running this
+/// code, is one of them: the folder it was loaded from is the folder
+/// `libonnxruntime.so` is in. Asking the kernel needs no call into Java.
+///
+/// When the libraries were left inside the package instead, the mapped name
+/// is the package's (`base.apk`), nothing matches, and the answer is `None`:
+/// the runtime is then reported as not found, which is the truth.
+pub fn loaded_library_dir(file_name: &str) -> Option<PathBuf> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    library_dir_in_maps(&maps, file_name)
+}
+
+/// [`loaded_library_dir`] on the text of a maps file.
+///
+/// A line is `address perms offset dev inode pathname`; the path is
+/// everything from the sixth field on, since a path may hold spaces.
+fn library_dir_in_maps(maps: &str, file_name: &str) -> Option<PathBuf> {
+    maps.lines().find_map(|line| {
+        let mut rest = line;
+        for _ in 0..5 {
+            rest = rest.trim_start();
+            rest = &rest[rest.find(char::is_whitespace)?..];
+        }
+        let path = Path::new(rest.trim());
+        if !path.is_absolute() || path.file_name()? != file_name {
+            return None;
+        }
+        path.parent().map(Path::to_path_buf)
+    })
 }
 
 /// [`candidate_paths`] with its inputs passed in, each path with the place
@@ -710,6 +756,41 @@ fn version_from_ptr(ptr: *const std::ffi::c_char) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_loaded_library_is_found_by_name_in_the_maps_text() {
+        let maps = "\
+7b2c400000-7b2c5a0000 r--p 00000000 fd:05 4242   /data/app/~~Ab=/app.edytlab.android-Cd=/lib/arm64/libedytlab_desktop_lib.so
+7b2c5a0000-7b2d000000 r-xp 001a0000 fd:05 4242   /data/app/~~Ab=/app.edytlab.android-Cd=/lib/arm64/libedytlab_desktop_lib.so
+7b30000000-7b30020000 rw-p 00000000 00:00 0      [anon:scudo:primary]
+7b40000000-7b40001000 r--p 00000000 fd:05 99     /system/lib64/libc.so
+7b50000000-7b50001000 r--p 00000000 fd:05 77     /data/my files/lib with space.so
+";
+        assert_eq!(
+            library_dir_in_maps(maps, "libedytlab_desktop_lib.so"),
+            Some(PathBuf::from(
+                "/data/app/~~Ab=/app.edytlab.android-Cd=/lib/arm64"
+            ))
+        );
+        assert_eq!(
+            library_dir_in_maps(maps, "lib with space.so"),
+            Some(PathBuf::from("/data/my files"))
+        );
+        // A name that is only part of another, an anonymous mapping and a
+        // library that is not loaded are all "not found".
+        assert_eq!(library_dir_in_maps(maps, "desktop_lib.so"), None);
+        assert_eq!(library_dir_in_maps(maps, "[anon:scudo:primary]"), None);
+        assert_eq!(library_dir_in_maps(maps, "libonnxruntime.so"), None);
+        assert_eq!(library_dir_in_maps("", "libc.so"), None);
+    }
+
+    /// Libraries left inside the package are mapped under the package's
+    /// name, so the app's library is not found and no folder is guessed.
+    #[test]
+    fn a_library_mapped_from_inside_the_package_is_not_found() {
+        let maps = "7b2c400000-7b2c5a0000 r--p 00a00000 fd:05 4242   /data/app/~~Ab=/app.edytlab.android-Cd=/base.apk\n";
+        assert_eq!(library_dir_in_maps(maps, "libedytlab_desktop_lib.so"), None);
+    }
+
     use super::*;
     use std::io::Write;
     use std::sync::mpsc;

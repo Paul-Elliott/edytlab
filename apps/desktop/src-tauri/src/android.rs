@@ -14,6 +14,9 @@
 //! * **Exports** are written to `exports/` in the app's storage and leave
 //!   through the share sheet or a "save to" dialog ([`share_export`],
 //!   [`save_export_to`]).
+//! * **API keys** are kept in the app's storage, encrypted with a key in the
+//!   Android Keystore (`KeystoreSecrets`), because the `keyring` crate the
+//!   desktops use has no Android store and would forget them at each launch.
 //!
 //! The commands that only decide paths work on every platform, which is what
 //! lets the host tests cover them. The ones that need Android itself (the
@@ -51,6 +54,13 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
         .setup(|app, api| {
             let handle = api.register_android_plugin("app.edytlab.android", "EdytlabPlugin")?;
             app.manage(Bridge(handle));
+            // Where the API keys are kept ([`KeystoreSecrets`]). Here, right
+            // after the bridge it calls through and before the app's own
+            // `setup` runs, so it is in place when the startup thread reads
+            // the keys. Until it is, `ai::keychain` refuses every call.
+            if !ai::keychain::install_platform_store(Box::new(KeystoreSecrets(app.clone()))) {
+                tracing::warn!("a secret store was installed before the Android Keystore one");
+            }
             Ok(())
         })
         .build()
@@ -102,6 +112,74 @@ where
 }
 
 // ---------------------------------------------------------------------------
+// Secrets: the Android Keystore
+// ---------------------------------------------------------------------------
+
+/// Where `ai::keychain` keeps its secrets on Android (the API keys and the
+/// ChatGPT sign-in's token, together the one `secrets` item): files in the
+/// app's own storage, encrypted with a key that never leaves the Android
+/// Keystore (`EdytlabPlugin.secretGet`, `secretSet` and `secretDelete`).
+///
+/// Every desktop uses the `keyring` crate, which has no Android store: built
+/// for Android it keeps values in memory, and a saved key is gone at the next
+/// launch. [`init`] installs this in its place.
+///
+/// Each call waits for Kotlin's answer, as [`call`] does. Kotlin takes the
+/// command on Android's main thread, so a call made from that thread would
+/// wait on itself; the keychain is read from the startup thread, the
+/// blocking pool and the commands' own threads.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+struct KeystoreSecrets<R: Runtime>(AppHandle<R>);
+
+impl<R: Runtime> ai::keychain::SecretStore for KeystoreSecrets<R> {
+    fn get(&self, account: &str) -> CmdResult<Option<Vec<u8>>> {
+        let answer: serde_json::Value = call(
+            &self.0,
+            "secretGet",
+            serde_json::json!({ "account": account }),
+        )?;
+        secret_in(&answer)
+    }
+
+    fn set(&self, account: &str, value: &[u8]) -> CmdResult<()> {
+        call::<R, serde_json::Value>(
+            &self.0,
+            "secretSet",
+            serde_json::json!({
+                "account": account,
+                "value": ai::keychain::secret_to_text(value),
+            }),
+        )?;
+        Ok(())
+    }
+
+    fn delete(&self, account: &str) -> CmdResult<()> {
+        call::<R, serde_json::Value>(
+            &self.0,
+            "secretDelete",
+            serde_json::json!({ "account": account }),
+        )?;
+        Ok(())
+    }
+}
+
+/// The secret in what `EdytlabPlugin.secretGet` answered: `{ "value": … }`
+/// with the bytes as base64, or with `null` when nothing is saved.
+///
+/// Read from loose JSON, not into a struct: serde's words for an answer that
+/// does not fit quote the value it found, and those words end up in a log.
+/// An answer without a `value` is an error. Only an explicit `null` may say
+/// "nothing saved", because that tells the app the person has no key.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+fn secret_in(answer: &serde_json::Value) -> CmdResult<Option<Vec<u8>>> {
+    match answer.get("value") {
+        Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(text)) => ai::keychain::secret_from_text(text).map(Some),
+        _ => Err("the Android Keystore's answer was not understood".to_string()),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // The device
 // ---------------------------------------------------------------------------
 
@@ -110,11 +188,15 @@ where
 pub struct DeviceInfo {
     /// True in the Android app.
     pub android: bool,
-    /// The device's memory, when the platform says. Decides whether stem
-    /// separation may run (`ml::STEMS_MIN_RAM_BYTES`).
+    /// The device's memory, when the platform says.
     pub total_ram_bytes: Option<u64>,
     /// "Google Pixel 8", for the Settings line. Android only.
     pub model: Option<String>,
+    /// Whether stem separation is offered here. Always on a desktop; on
+    /// Android only with the memory the model needs
+    /// (`separate_stems::ANDROID_MIN_TOTAL_RAM_BYTES`), which the tool
+    /// checks again before it loads the model.
+    pub stems_supported: bool,
 }
 
 /// What `EdytlabPlugin.deviceInfo` answers.
@@ -123,7 +205,6 @@ pub struct DeviceInfo {
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
 pub(crate) struct NativeDeviceInfo {
     pub total_ram_bytes: u64,
-    pub native_library_dir: String,
     #[serde(default)]
     pub model: Option<String>,
 }
@@ -141,30 +222,93 @@ pub async fn device_info<R: Runtime>(app: AppHandle<R>) -> CmdResult<DeviceInfo>
             android: false,
             total_ram_bytes: None,
             model: None,
+            stems_supported: true,
         });
     }
     off_thread(move || {
         let native = native_device_info(&app).ok();
+        let total_ram_bytes = native.as_ref().map(|n| n.total_ram_bytes);
         Ok(DeviceInfo {
             android: true,
-            total_ram_bytes: native.as_ref().map(|n| n.total_ram_bytes),
+            total_ram_bytes,
             model: native.and_then(|n| n.model),
+            // A total that cannot be read hides nothing: the tool's own
+            // check is the one that refuses.
+            stems_supported: !total_ram_bytes
+                .is_some_and(tools::tool::separate_stems::too_small_for_stems),
         })
     })
     .await
 }
 
-/// Keep the screen on while long work runs, and let it sleep after. Android
-/// stops an app's work soon after the screen goes off. A no-op on a desktop,
-/// and a failure is only logged: the work goes on either way.
-pub(crate) fn keep_screen_on<R: Runtime>(app: &AppHandle<R>, on: bool) {
+/// What is running that the screen must stay on for (an assistant turn, a
+/// model download), by name. See [`set_busy`].
+static BUSY: std::sync::Mutex<Option<std::collections::BTreeSet<String>>> =
+    std::sync::Mutex::new(None);
+
+/// Add `reason` to `busy` or take it out. Answers the new state of the
+/// screen when this call changed it: `Some(true)` when the set was empty and
+/// no longer is, `Some(false)` when it has just emptied.
+fn note_busy(
+    busy: &mut std::collections::BTreeSet<String>,
+    reason: &str,
+    running: bool,
+) -> Option<bool> {
+    let was_empty = busy.is_empty();
+    if running {
+        busy.insert(reason.to_string());
+    } else {
+        busy.remove(reason);
+    }
+    (was_empty != busy.is_empty()).then_some(!busy.is_empty())
+}
+
+/// Say that the long work called `reason` has started or ended. While any is
+/// running the Android app keeps the screen on: Android stops an app's work
+/// soon after its screen goes off, which would end a stem separation, a
+/// transcription or a model download part way. A no-op on a desktop.
+///
+/// The call to Android is made from a thread of its own and its failure is
+/// only logged, so the work never waits for it.
+pub(crate) fn set_busy<R: Runtime>(app: &AppHandle<R>, reason: &str, running: bool) {
     if !cfg!(target_os = "android") {
         return;
     }
-    if let Err(error) =
-        call::<R, serde_json::Value>(app, "keepScreenOn", serde_json::json!({ "on": on }))
-    {
-        tracing::warn!(%error, on, "could not change keep-screen-on");
+    let change = {
+        let Ok(mut busy) = BUSY.lock() else { return };
+        note_busy(busy.get_or_insert_with(Default::default), reason, running)
+    };
+    let Some(on) = change else { return };
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if let Err(error) =
+            call::<R, serde_json::Value>(&app, "keepScreenOn", serde_json::json!({ "on": on }))
+        {
+            tracing::warn!(%error, on, "could not change keep-screen-on");
+        }
+    });
+}
+
+/// [`set_busy`] for as long as this is alive: the screen stays on from
+/// `Busy::start` until the value is dropped, however the work ends.
+pub(crate) struct Busy<R: Runtime> {
+    app: AppHandle<R>,
+    reason: &'static str,
+}
+
+impl<R: Runtime> Busy<R> {
+    pub(crate) fn start(app: &AppHandle<R>, reason: &'static str) -> Self {
+        set_busy(app, reason, true);
+        Self {
+            app: app.clone(),
+            reason,
+        }
+    }
+}
+
+impl<R: Runtime> Drop for Busy<R> {
+    fn drop(&mut self) {
+        set_busy(&self.app, self.reason, false);
     }
 }
 
@@ -655,6 +799,55 @@ mod tests {
             Some("body")
         );
         assert_eq!(with_platform_note(None), None);
+    }
+
+    #[test]
+    fn only_an_explicit_null_says_that_no_secret_is_saved() {
+        use serde_json::json;
+        assert_eq!(secret_in(&json!({ "value": null })), Ok(None));
+        assert_eq!(
+            secret_in(&json!({ "value": "c2stMQ==" })),
+            Ok(Some(b"sk-1".to_vec()))
+        );
+        // An answer that does not say is not "no key": the app would show
+        // the first-run prompt over a key that is saved.
+        for broken in [
+            json!({}),
+            json!(null),
+            json!({ "value": 7 }),
+            json!({ "value": "not base64 sk-secret" }),
+        ] {
+            let error = secret_in(&broken).expect_err("must not read as nothing saved");
+            assert!(!error.contains("sk-secret"), "{error}");
+        }
+    }
+
+    /// Off Android there is no Keystore to ask, and the store says so. It
+    /// never answers "nothing saved" or "saved" for a call it could not make.
+    #[test]
+    fn the_keystore_store_is_an_error_everywhere_but_android() {
+        use ai::keychain::SecretStore as _;
+        let app = tauri::test::mock_app();
+        let store = KeystoreSecrets(app.handle().clone());
+        assert_eq!(store.get("secrets"), Err(UNAVAILABLE.to_string()));
+        assert_eq!(store.set("secrets", b"{}"), Err(UNAVAILABLE.to_string()));
+        assert_eq!(store.delete("secrets"), Err(UNAVAILABLE.to_string()));
+    }
+
+    #[test]
+    fn the_screen_changes_only_when_the_first_work_starts_and_the_last_ends() {
+        let mut busy = std::collections::BTreeSet::new();
+        assert_eq!(note_busy(&mut busy, "turn", true), Some(true));
+        assert_eq!(note_busy(&mut busy, "download:htdemucs", true), None);
+        // Said twice, counted once.
+        assert_eq!(note_busy(&mut busy, "turn", true), None);
+        assert_eq!(note_busy(&mut busy, "turn", false), None);
+        assert_eq!(
+            note_busy(&mut busy, "download:htdemucs", false),
+            Some(false)
+        );
+        // Ending what never started changes nothing.
+        assert_eq!(note_busy(&mut busy, "turn", false), None);
     }
 
     #[test]

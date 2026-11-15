@@ -101,6 +101,16 @@
 //! see; and a save or removal made while the item cannot be reached never
 //! writes the durable item (a removal is an error).
 //!
+//! On Android there is no OS keychain `keyring` can reach: built for Android
+//! it keeps every entry in an in-memory mock store, and a saved key would be
+//! gone at the next launch. So there the entries are those of a store the app
+//! installs at startup with [`install_platform_store`] (the Android Keystore,
+//! through the app's Kotlin plugin), and nothing is ever an `Entry`. It is the
+//! same one `secrets` item, with no second store beside it. A read or a save
+//! made before the store is installed fails as an access failure, never as
+//! "nothing stored", and [`persistence`] is durable once the store has kept a
+//! value. See `keychain_platform_store.rs`.
+//!
 //! A locked or refused store is an error, never a silent "nothing
 //! stored": the `try_` readers return it, and the `Option` readers log
 //! it. All I/O is serialized behind one lock, because the Secret Service
@@ -141,9 +151,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::anthropic::Effort;
 
+#[path = "keychain_platform_store.rs"]
+mod platform_store;
+
+pub use platform_store::{install_platform_store, secret_from_text, secret_to_text, SecretStore};
+
 /// Service name used in the OS keychain. Must match the bundle id
 /// declared in `tauri.conf.json` so the macOS keychain prompt names the
-/// app correctly.
+/// app correctly. Not used on Android, where there is no OS keychain to name
+/// a service in.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const SERVICE: &str = "app.edytlab.desktop";
 
 /// The one keychain account that holds every secret, as a JSON object.
@@ -177,6 +194,10 @@ const ACTIVE_PROVIDER_ACCOUNT: &str = "active_provider";
 /// `_api_key`, `_model`, `_base_url` or `_effort`, or is
 /// [`ACTIVE_PROVIDER_ACCOUNT`], [`CHATGPT_REFRESH_TOKEN_ACCOUNT`] or
 /// [`SECRETS_ACCOUNT`] (a test pins this).
+///
+/// Android does not look it up: its store is asked to keep a value instead
+/// (`platform_store::persistence`).
+#[cfg_attr(target_os = "android", allow(dead_code))]
 const PROBE_ACCOUNT: &str = "persistence_probe";
 
 /// Where the values written now will end up.
@@ -188,9 +209,14 @@ pub enum Persistence {
     Durable,
     /// Linux with no Secret Service to talk to, so a secret sits in the
     /// kernel keyring. It lasts until the machine restarts.
+    ///
+    /// On Android, only from [`persistence`]: the app's store is not
+    /// installed, or did not keep a value. A save there fails; it never
+    /// answers this.
     SessionOnly {
         /// Why the Secret Service could not be used, as `keyring`
-        /// words it. Never contains a stored value.
+        /// words it (on Android, why the app's store could not). Never
+        /// contains a stored value.
         reason: String,
     },
 }
@@ -646,6 +672,7 @@ fn delete_from(primary: &dyn Slot, legacy: Option<&dyn Slot>) -> keyring::Result
 /// platforms never see an extra keychain prompt. Otherwise the answer
 /// is session-only exactly when `primary` cannot be reached. A locked
 /// store is still the durable one.
+#[cfg_attr(target_os = "android", allow(dead_code))]
 fn probe(primary: &dyn Slot, fallback_available: bool) -> Persistence {
     if !fallback_available {
         return Persistence::Durable;
@@ -930,14 +957,24 @@ enum DirSource {
 type SlotPair = (Box<dyn Slot>, Option<Box<dyn Slot>>);
 type SlotFactory = Box<dyn Fn(&str) -> keyring::Result<SlotPair> + Send + Sync>;
 
+#[cfg(not(target_os = "android"))]
 fn os_slots(account: &str) -> keyring::Result<SlotPair> {
     let primary = open_primary(account)?;
     let legacy = open_legacy(account).map(|e| Box::new(e) as Box<dyn Slot>);
     Ok((Box::new(primary), legacy))
 }
 
+/// Android: the store the app installed ([`install_platform_store`]), and no
+/// second one. Never an `Entry`: `keyring` has no Android store, and its
+/// stand-in forgets everything when the app closes.
+#[cfg(target_os = "android")]
+fn os_slots(account: &str) -> keyring::Result<SlotPair> {
+    Ok((Box::new(platform_store::PlatformSlot::open(account)), None))
+}
+
 /// The platform's own store: login keychain, Credential Manager, or on
 /// Linux the Secret Service.
+#[cfg(not(target_os = "android"))]
 fn open_primary(account: &str) -> keyring::Result<Entry> {
     Entry::new(SERVICE, account)
 }
@@ -954,7 +991,7 @@ fn open_legacy(account: &str) -> Option<Entry> {
         .map(|c| Entry::new_with_credential(Box::new(c)))
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
 fn open_legacy(_account: &str) -> Option<Entry> {
     None
 }
@@ -1631,6 +1668,7 @@ impl Store {
         Ok(Persistence::Durable)
     }
 
+    #[cfg(not(target_os = "android"))]
     fn persistence(&self) -> Persistence {
         let _guard = self.lock();
         let Ok((primary, legacy)) = (self.slots)(PROBE_ACCOUNT) else {
@@ -1638,6 +1676,18 @@ impl Store {
             return Persistence::Durable;
         };
         probe(&*primary, legacy.is_some())
+    }
+
+    /// Android has no second store, which [`probe`] answers "durable" for
+    /// without asking anything. That is true of a login keychain and was not
+    /// true here: with no store installed, or one that keeps nothing, a key
+    /// does not outlive the app. So the installed store is asked to keep a
+    /// value (once; see `platform_store::persistence`). Under the lock, like
+    /// all the other I/O.
+    #[cfg(target_os = "android")]
+    fn persistence(&self) -> Persistence {
+        let _guard = self.lock();
+        platform_store::persistence()
     }
 }
 
@@ -1669,6 +1719,11 @@ fn or_warn(key: Field<'_>, read: Result<Option<String>, KeychainError>) -> Optio
 ///
 /// Looks up [`PROBE_ACCOUNT`], which nothing writes, so it never raises
 /// an unlock prompt.
+///
+/// On Android it is [`Persistence::Durable`] once the store the app installed
+/// ([`install_platform_store`]) has saved a value and read it back, and
+/// [`Persistence::SessionOnly`] with the reason while no store is installed
+/// or it does not keep one.
 pub fn persistence() -> Persistence {
     store().persistence()
 }

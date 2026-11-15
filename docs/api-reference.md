@@ -293,6 +293,56 @@ inspection.
 
 ---
 
+## Android: projects, import and exports
+
+The Android app has no folder picker and no paths to type, so it keeps projects and
+exports in its own storage and takes audio from the system picker. These commands are
+its replacements for the folder and save dialogs (`src-tauri/src/android.rs`). The ones
+that only decide paths work on every platform; the ones marked Android only answer an
+error on a desktop.
+
+### `deviceInfo() → DeviceInfo`
+
+Where the window is running: { android, total_ram_bytes, model }. On a desktop android is false and the rest is null. The Android app reads the device's memory from it, which decides whether stem separation is offered.
+
+### `listManagedProjects() → RecentProject[]`
+
+The projects kept in the app's own storage (projects/ in the app data folder), most recently opened first. The Android app lists these in place of a folder picker, which Android does not have.
+
+### `createManagedProject(name: string) → string`
+
+Make an empty folder for a project called name in the app's storage and write the name into its project.json. Resolves with the folder's path, which openProject (a new project) or saveProjectAs (a copy of the open one) then takes. A name already in use gets a numbered folder; an empty name or one over 80 characters is refused.
+
+### `deleteManagedProject(path: string) → RecentProject[]`
+
+Delete a project kept in the app's storage, with its audio and history, and drop its row from the recents. Refused for the project that is open and for any folder that is not directly inside the app's projects folder. Resolves with the projects that remain.
+
+### `importAudio(uris: string[]) → BatchLoadResult`
+
+Android only. Load the files the system picker named. Each `content://` address is copied into the open project's imports/ folder under the name the picker showed, then loaded as batchLoad loads a path, one track each. A file that cannot be copied or is not audio is reported in failures and does not stop the others.
+
+### `exportDestination(name: string) → string`
+
+A free path in the app's exports folder for a file called name (name (2), name (3) and so on if it is taken). The Android app asks this in place of a save dialog, writes the export there, then offers Share and Save to.
+
+### `listExports() → ExportFile[]`
+
+The files in the app's exports folder, newest first: { name, bytes, modified_ms }.
+
+### `deleteExport(name: string) → ExportFile[]`
+
+Remove one file from the exports folder. Resolves with the files that remain. Only a plain file name that is in the folder is accepted.
+
+### `shareExport(name: string) → void`
+
+Android only. Open the system share sheet for one export.
+
+### `saveExportTo(name: string, uri: string) → void`
+
+Android only. Write one export into the document the system's save dialog created at uri (a `content://` address).
+
+---
+
 ## API Key Management
 
 ### `setApiKey(key: string) → KeychainPersistence`

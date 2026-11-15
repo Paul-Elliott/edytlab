@@ -1987,6 +1987,12 @@ pub fn ml_models_with_catalog_for_app<R: Runtime>(
 ) -> MlModels {
     match models_dir {
         Some(dir) => MlModels::with_offered(dir, catalog, offered, move |status| {
+            // Android: keep the screen on while a model is coming down.
+            crate::android::set_busy(
+                &handle,
+                &format!("download:{}", status.model),
+                matches!(status.state, MlModelStateDto::Downloading { .. }),
+            );
             let _ = handle.emit(ML_MODEL_PROGRESS_EVENT, status);
         }),
         None => MlModels::unavailable(),
@@ -3847,6 +3853,10 @@ pub async fn send_message<R: Runtime>(
     text: String,
     disabled_tools: Vec<String>,
 ) -> CmdResult<()> {
+    // Android: the screen stays on for the length of the turn, or the system
+    // would stop a long tool (a stem separation, a transcription) soon after
+    // it went dark. Nothing on a desktop.
+    let _busy = crate::android::Busy::start(&app, "turn");
     // Build the per-turn SessionContext from the current selection, the
     // annotations on the store head, and the head's tracks (#408), buses
     // (#552) and master chain (#460). We snapshot these before acquiring

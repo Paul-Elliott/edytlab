@@ -24,6 +24,7 @@
  * paths into one edit is how they drift.
  */
 
+import { isAndroid } from "../lib/platform";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { TranscriptWord } from "../lib/tauri-bridge";
@@ -63,6 +64,11 @@ export function TranscriptPane({
   const [anchor, setAnchor] = useState<number | null>(null);
   const [focus, setFocus] = useState<number | null>(null);
   const dragging = useRef(false);
+  // The Android app: whether the press being handled came from a finger. A
+  // finger cannot drag across words (a drag scrolls the transcript), so
+  // there a tap selects a word and a tap on a second word extends to it.
+  const android = isAndroid();
+  const byTouch = useRef(false);
 
   const span = useMemo(() => {
     if (anchor === null || focus === null) return null;
@@ -144,10 +150,11 @@ export function TranscriptPane({
       <Empty>
         <p data-testid="transcript-empty" style={{ maxWidth: 420, lineHeight: 1.6 }}>
           No transcript yet. Ask the assistant to transcribe a track, for
-          example &ldquo;transcribe track 1&rdquo;. It runs on this computer,
+          example &ldquo;transcribe track 1&rdquo;. It runs on this{" "}
+          {android ? "device" : "computer"},
           with the speech model you download once in Settings → Account, and
-          your audio is not sent anywhere. Then select words here and press
-          Delete to cut that audio.
+          your audio is not sent anywhere. Then select words here and{" "}
+          {android ? "tap Cut" : "press Delete"} to cut that audio.
         </p>
       </Empty>
     );
@@ -166,6 +173,9 @@ export function TranscriptPane({
       aria-label="Transcript"
       tabIndex={0}
       onKeyDown={handleKeyDown}
+      onPointerDown={(e) => {
+        byTouch.current = e.pointerType === "touch";
+      }}
       style={{
         height: "100%",
         overflowY: "auto",
@@ -186,9 +196,11 @@ export function TranscriptPane({
         }}
       >
         {words.length} words ·{" "}
-        {cutBlockedReason === null
-          ? "select and press Delete to cut the audio"
-          : "cutting by these words is off"}
+        {cutBlockedReason !== null
+          ? "cutting by these words is off"
+          : android
+            ? "tap a word, then another, and tap Cut to remove that audio"
+            : "select and press Delete to cut the audio"}
       </p>
       {cutBlockedReason !== null ? (
         <p
@@ -216,6 +228,18 @@ export function TranscriptPane({
             data-selected={selected ? "true" : "false"}
             onMouseDown={(e) => {
               if (e.button !== 0) return;
+              // A tap arrives here too, as the mouse press a browser sends
+              // after it. With one word selected, the next tap extends the
+              // selection to the word tapped; otherwise it starts a new one.
+              if (byTouch.current) {
+                if (anchor !== null && focus === anchor && i !== anchor) {
+                  setFocus(i);
+                } else {
+                  setAnchor(i);
+                  setFocus(i);
+                }
+                return;
+              }
               dragging.current = true;
               setAnchor(i);
               setFocus(i);

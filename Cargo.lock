@@ -417,6 +417,8 @@ name = "audio-decoder"
 version = "0.9.4"
 dependencies = [
  "hound",
+ "ndk",
+ "ndk-sys",
  "objc2-audio-toolbox",
  "objc2-core-audio-types",
  "objc2-core-foundation",

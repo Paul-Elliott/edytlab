@@ -97,6 +97,9 @@ pub enum StemFailure {
     RuntimeUnavailable(String),
     /// The runtime ran out of memory.
     OutOfMemory,
+    /// An Android device with too little memory to try (its total, in
+    /// bytes). See [`ANDROID_MIN_TOTAL_RAM_BYTES`].
+    DeviceTooSmall(u64),
     /// The user pressed Cancel.
     Cancelled,
     /// Anything else the run reported, in words with no path in them.
@@ -145,6 +148,47 @@ pub fn resolve_model(
     downloaded: impl FnOnce() -> Option<PathBuf>,
 ) -> Result<ModelRef, StemFailure> {
     local_model::resolve(ml_pipeline::models::htdemucs(), env, downloaded).map_err(Into::into)
+}
+
+/// The memory an Android device must have, in total, for a separation to be
+/// tried on it: what a phone sold as "8 GB" reports (about 7.3 to 7.6 GiB),
+/// and not what one sold as "6 GB" does.
+///
+/// The model peaks near 3 GB (`docs/agents/ml-models.md`). A desktop that is
+/// short of memory gets an allocation failure, which the run reports as
+/// [`StemFailure::OutOfMemory`]. Android does not fail the allocation: its
+/// low-memory killer closes the app, and the person loses the turn with no
+/// message at all. So a device that plainly cannot hold the model is refused
+/// before it is loaded. Android only; a desktop is never refused here.
+pub const ANDROID_MIN_TOTAL_RAM_BYTES: u64 = 7 * 1024 * 1024 * 1024;
+
+/// `MemTotal` from the text of `/proc/meminfo`, in bytes.
+pub fn total_memory_bytes(meminfo: &str) -> Option<u64> {
+    let line = meminfo.lines().find(|line| line.starts_with("MemTotal:"))?;
+    let mut fields = line.split_whitespace().skip(1);
+    let amount: u64 = fields.next()?.parse().ok()?;
+    match fields.next() {
+        Some("kB") => amount.checked_mul(1024),
+        // The kernel has only ever written kB here; anything else is not a
+        // number this can read, and "unknown" refuses nothing.
+        _ => None,
+    }
+}
+
+/// Whether a device with `total` bytes of memory is too small for the model.
+pub fn too_small_for_stems(total: u64) -> bool {
+    total < ANDROID_MIN_TOTAL_RAM_BYTES
+}
+
+/// This device's total memory, when it is an Android device with too little
+/// to try a separation on. `None` everywhere else, and when the total cannot
+/// be read.
+fn android_device_too_small() -> Option<u64> {
+    if !cfg!(target_os = "android") {
+        return None;
+    }
+    let total = total_memory_bytes(&std::fs::read_to_string("/proc/meminfo").ok()?)?;
+    too_small_for_stems(total).then_some(total)
 }
 
 /// The real thing: the pinned htdemucs on ONNX Runtime.
@@ -235,6 +279,10 @@ impl StemModel for DemucsStems {
         dest: &Path,
         control: &Control<'_>,
     ) -> Result<Separated, StemFailure> {
+        // Before the model is loaded: loading it is most of the memory.
+        if let Some(total) = android_device_too_small() {
+            return Err(StemFailure::DeviceTooSmall(total));
+        }
         let loaded = Self::load(model)?;
         let result = loaded.separate_to_dir(audio, dest, control);
         // The call has returned, so its network guard and temporary buffers
@@ -282,6 +330,13 @@ pub fn answer(failure: &StemFailure) -> String {
              fall back to. Tell the user, and do not call separate_stems again unless they \
              free memory and ask."
             .to_string(),
+        StemFailure::DeviceTooSmall(total) => format!(
+            "Stem separation needs about 3 GB of free memory, and this device has {:.1} GB in \
+             total, so it is not run here: Android would close the app part way through. It \
+             runs on a phone or tablet with 8 GB of memory or more, and on a computer. Tell the \
+             user, and do not call separate_stems again on this device.",
+            *total as f64 / 1e9
+        ),
         StemFailure::Cancelled => "Stem separation was cancelled by the user. Nothing was \
              changed and nothing was kept. Do not run it again unless they ask."
             .to_string(),

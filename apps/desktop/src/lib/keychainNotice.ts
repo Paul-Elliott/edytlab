@@ -14,6 +14,7 @@
  * All the copy is here so the banner, the Settings note and the tests say
  * the same thing.
  */
+import { isAndroid } from "./platform";
 import type { ChatGptTokenStorage, KeychainPersistence } from "./tauri-bridge";
 
 export interface KeychainNotice {
@@ -31,6 +32,29 @@ export function keychainNotice(
   readError: string | null,
   persistence: KeychainPersistence | null,
 ): KeychainNotice | null {
+  // Android keeps keys in a file encrypted with an Android Keystore key
+  // (`EdytlabPlugin.kt`). There is no keyring to unlock and no Secret
+  // Service to start, so both notices say what is true there instead.
+  if (isAndroid()) {
+    if (readError) {
+      return {
+        kind: "read-error",
+        message:
+          "Couldn't read your saved keys from this device's secure storage, so edytlab can't tell whether an API key is saved. " +
+          "Close and reopen edytlab, or enter your key again in Settings. " +
+          `(${readError})`,
+      };
+    }
+    if (persistence && !persistence.persistent) {
+      return {
+        kind: "session-only",
+        message:
+          "This device's secure storage did not keep a test value, so your API key and provider may be gone the next time you open edytlab." +
+          (persistence.reason ? ` (${persistence.reason})` : ""),
+      };
+    }
+    return null;
+  }
   if (readError) {
     return {
       kind: "read-error",

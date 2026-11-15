@@ -8,34 +8,40 @@
  * the person chose it, so nothing is offered that is not opened.
  *
  * M4A/AAC is opened by the operating system's own decoder (AudioToolbox on
- * macOS, Media Foundation on Windows, #764), because an AAC decoder built
- * into the app would need a patent licence the project does not hold. Linux
- * has none, so the picker and the landing screen offer M4A on macOS and
- * Windows only. Opus is opened everywhere, by a pure-Rust codec.
+ * macOS, Media Foundation on Windows, the NDK's media library on Android,
+ * #764), because an AAC decoder built into the app would need a patent
+ * licence the project does not hold. Linux has none, so the picker and the
+ * landing screen offer M4A on macOS, Windows and Android only. Opus is opened
+ * everywhere, by a pure-Rust codec.
  */
 
 /** Opened on every platform. */
 export const BASE_EXTENSIONS = ["wav", "mp3", "flac", "ogg", "opus", "aif", "aiff"];
 
-/** Opened only where the operating system has a decoder: macOS and Windows. */
+/** Opened only where the operating system has a decoder: macOS, Windows and Android. */
 export const OS_DECODER_EXTENSIONS = ["m4a"];
 
 /** The formats' short names, as the landing screen says them (`aif` and `aiff` are one format). */
 export const BASE_FORMAT_NAMES = ["wav", "mp3", "flac", "ogg", "opus", "aiff"];
 
 /**
- * Whether this computer's own decoder handles M4A/AAC: macOS and Windows.
+ * Whether this device's own decoder handles M4A/AAC: macOS, Windows and
+ * Android.
  *
  * `navigator.platform` is deprecated but is what is reliably available inside
  * the webview (`userAgentData` is not implemented in WKWebView), and the
  * landing screen's shortcut hint reads it the same way. The match is
  * case-sensitive on purpose: a Linux user agent can hold "darwin"-like words
- * in lower case, never "Mac" or "Win" in this spelling.
+ * in lower case, never "Mac", "Win" or "Android" in this spelling. Android's
+ * platform is "Linux armv8l" and the like, so it is its user agent that says
+ * "Android". An iPhone's or iPad's says "like Mac OS X" and the app has no
+ * decoder there, so those are left out first.
  */
 export function osDecodesM4a(): boolean {
   if (typeof navigator === "undefined") return false;
   const platform = `${navigator.platform ?? ""} ${navigator.userAgent ?? ""}`;
-  return /Mac|Win/.test(platform) && !/iPhone|iPad|Android/.test(platform);
+  if (/iPhone|iPad/.test(platform)) return false;
+  return /Mac|Win|Android/.test(platform);
 }
 
 /** The extensions the file picker offers on this computer. */

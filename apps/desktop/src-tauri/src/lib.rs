@@ -60,6 +60,12 @@ use tauri::{Emitter, Manager};
 #[cfg(desktop)]
 const MENU_OPEN_FILE_EVENT: &str = "menu://open-file";
 
+/// The file name of this crate's library in the Android package: `lib` +
+/// the `[lib] name` in `Cargo.toml` + `.so`. A test below holds it equal to
+/// the manifest.
+#[cfg(any(target_os = "android", test))]
+pub(crate) const ANDROID_APP_LIBRARY: &str = "libedytlab_desktop_lib.so";
+
 /// Register the directory the installer puts the ONNX Runtime library in,
 /// so `ml_pipeline::runtime::ensure` looks there after `ORT_DYLIB_PATH` and
 /// before the executable's own directory (#383).
@@ -72,10 +78,21 @@ const MENU_OPEN_FILE_EVENT: &str = "menu://open-file";
 /// a build that is not installed (`cargo run`, `tauri dev`) has the library
 /// next to the executable or has none.
 fn register_ml_runtime_bundle(resource_dir: Option<&std::path::Path>) {
-    let exe = std::env::current_exe().ok();
-    let Some(dir) =
+    // Android: the library comes in the package (the `onnxruntime-android`
+    // dependency in `gen/android/app/build.gradle.kts`) and the system
+    // unpacks it beside the app's own library at install. That folder is
+    // found from this library's own mapping; see `loaded_library_dir`.
+    #[cfg(target_os = "android")]
+    let dir = {
+        let _ = resource_dir;
+        ml_pipeline::runtime::loaded_library_dir(ANDROID_APP_LIBRARY)
+    };
+    #[cfg(not(target_os = "android"))]
+    let dir = {
+        let exe = std::env::current_exe().ok();
         ml_pipeline::runtime::bundle_dir_for(std::env::consts::OS, exe.as_deref(), resource_dir)
-    else {
+    };
+    let Some(dir) = dir else {
         return;
     };
     if !ml_pipeline::runtime::set_bundle_dir(dir.clone()) {
@@ -627,4 +644,22 @@ fn resolve_global_mcp_path<R: tauri::Runtime>(app: &tauri::App<R>) -> std::path:
         .unwrap_or_else(|_| std::path::PathBuf::from("."))
         .join(".edytlab")
         .join("mcp.json")
+}
+
+#[cfg(test)]
+mod android_library_tests {
+    /// The Android app finds the ONNX Runtime library beside its own, which
+    /// it looks up by file name. A renamed `[lib]` would leave it looking for
+    /// a name nothing is loaded under, and the runtime "not found".
+    #[test]
+    fn the_android_library_name_is_the_lib_name_in_the_manifest() {
+        let manifest = include_str!("../Cargo.toml");
+        let lib = manifest
+            .split("[lib]")
+            .nth(1)
+            .and_then(|rest| rest.lines().find(|line| line.starts_with("name")))
+            .and_then(|line| line.split('"').nth(1))
+            .expect("Cargo.toml has a [lib] name");
+        assert_eq!(super::ANDROID_APP_LIBRARY, format!("lib{lib}.so"));
+    }
 }

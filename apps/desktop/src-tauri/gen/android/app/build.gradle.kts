@@ -43,6 +43,10 @@ android {
     packaging {
         jniLibs {
             useLegacyPackaging = true
+            // The ONNX Runtime package also carries the bridge its Java API
+            // uses. The app calls the C API from Rust, so that library would
+            // only be weight.
+            excludes.add("**/libonnxruntime4j_jni.so")
         }
     }
     buildTypes {
@@ -97,6 +101,12 @@ dependencies {
     implementation("androidx.activity:activity-ktx:1.10.1")
     implementation("com.google.android.material:material:1.12.0")
     implementation("androidx.lifecycle:lifecycle-process:2.10.0")
+    // ONNX Runtime, for transcription, speaker labels and stem separation.
+    // Only its native library is used (jni/<abi>/libonnxruntime.so), which
+    // the Rust side loads by path. The version is the one
+    // src-tauri/ml-runtime.json pins for every platform; a test in
+    // crates/ml-pipeline holds the two equal.
+    implementation("com.microsoft.onnxruntime:onnxruntime-android:1.23.2")
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.4")
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")

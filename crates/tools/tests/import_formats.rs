@@ -7,7 +7,7 @@
 //! `provenance::audio_hash` into `derived/`, exactly as it does for an MP3
 //! or a FLAC; `batch_apply` takes the new extensions; a format that is not
 //! supported is refused by name and writes no node. M4A/AAC is decoded by the
-//! system on macOS and Windows and refused on Linux, so those tests ask
+//! system on macOS, Windows and Android and refused on Linux, so those tests ask
 //! `audio_decoder::OS_DECODER_AVAILABLE` what to expect.
 
 use std::path::{Path, PathBuf};
@@ -166,7 +166,7 @@ fn batch_apply_picks_up_ogg_and_aiff_and_skips_m4a_where_the_system_cannot_decod
     .unwrap();
     std::fs::copy(fixture("tone_440_mono_44100_s16.aiff"), takes.join("c.aif")).unwrap();
     // Not importable here: skipped with the other non-audio files, not a
-    // failure (on macOS and Windows the system decodes M4A, so it is taken).
+    // failure (on macOS, Windows and Android the system decodes M4A, so it is taken).
     std::fs::copy(fixture("tone_440_mono_44100.m4a"), takes.join("d.m4a")).unwrap();
     // Opus is importable (#764).
     std::fs::copy(fixture("tone_440_mono_48000.opus"), takes.join("e.opus")).unwrap();
@@ -200,8 +200,8 @@ fn load_refuses_surround_opus_by_name_and_writes_nothing() {
 }
 
 /// Linux has no system AAC decoder, so `load` names the format and writes no
-/// node. (macOS and Windows decode the same file: `imports()`.)
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
+/// node. (macOS, Windows and Android decode the same file: `imports()`.)
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
 #[test]
 fn load_refuses_m4a_by_name_and_writes_nothing_where_the_system_has_no_decoder() {
     let mut s = Session::empty();
@@ -237,7 +237,7 @@ fn the_load_description_names_what_it_opens() {
     // supported, so the model does not offer a format that fails. The text is
     // the same on every platform: the tool list is one document.
     assert!(
-        d.contains("M4A/AAC on macOS and Windows"),
+        d.contains("M4A/AAC on macOS, Windows and Android"),
         "load's description should say where M4A/AAC opens: {d}"
     );
     assert!(
