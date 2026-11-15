@@ -4,6 +4,10 @@
   "bundle": {
     "android": {
       "minSdkVersion": 26
+    },
+    "resources": {
+      "licenses/onnxruntime-android/LICENSE": "licenses/onnxruntime/LICENSE",
+      "licenses/onnxruntime-android/ThirdPartyNotices.txt": "licenses/onnxruntime/ThirdPartyNotices.txt"
     }
   }
 }
