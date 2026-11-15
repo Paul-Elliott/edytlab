@@ -2,6 +2,15 @@
 
 The Android app is the desktop app built for another target: the same Rust core and the same React frontend, through Tauri's Android support. This guide says what differs, where it lives, and how it is checked. Read it before changing anything it names.
 
+## This fork
+
+This repository (`Paul-Elliott/edytlab`) is a fork of `laadtushar/edytlab`. `CLAUDE.md` was written for upstream and its owner. What differs here:
+
+- Pull requests are opened as drafts and merged by the fork's owner. Upstream's rule to squash-merge a green PR does not apply.
+- Upstream's tracking issue (#366), release day steps, advisory bots, and site and marketing sweeps are upstream's process. Skip them unless asked.
+- The fork's own check is the `Android` workflow (`.github/workflows/android.yml`). Upstream's desktop workflows are expected to be disabled. While they still run, three of their failures do not come from a change: the Linux build and the Rust coverage job run out of disk on a hosted runner, the coverage report has no DeepSource account to send to, and `Audit` reports advisories against upstream's lock file.
+- The code conventions, the area guides and the acceptance gates apply as written.
+
 ## The rule
 
 Nothing forks. Every Android difference is one of:
