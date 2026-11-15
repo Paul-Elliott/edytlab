@@ -31,6 +31,17 @@ impl Conversation {
         kept
     }
 
+    /// [`Conversation::to_keep`] as it will stand once `text` has been sent:
+    /// what is saved as a turn starts, so a turn the app is stopped in the
+    /// middle of still leaves the request behind it.
+    pub(crate) fn to_keep_with(&self, text: &str) -> Vec<Message> {
+        let mut next = Conversation {
+            messages: self.to_keep(),
+        };
+        next.push_user_text(text.to_string());
+        next.messages
+    }
+
     /// Replace the history with one read back from disk, and say how many
     /// messages were taken.
     ///
@@ -141,10 +152,14 @@ pub(crate) const RESTORE_BUDGET_BYTES: usize = 200 * 1024;
 /// * no message is empty, and none holds thinking;
 /// * every tool call is answered, in order, by the message after it, and
 ///   nothing else claims to be a result;
-/// * it ends on a reply of the assistant's that calls no tool.
+/// * it ends on a reply of the assistant's that calls no tool, or on what
+///   the user said after one.
 ///
-/// Whatever follows the last such reply is dropped: a turn that was cut off
-/// part way is not replayed.
+/// That last case is a turn the app was stopped in the middle of: the
+/// request is kept, so the next message joins it (`push_user_text`) and the
+/// model reads what was asked before "continue". What the cut-off turn did
+/// after the request (its calls, their results) is dropped: it is not known
+/// to be whole.
 fn replayable(messages: Vec<Message>) -> Vec<Message> {
     let mut kept: Vec<Message> = Vec::new();
     let mut complete = 0;
@@ -180,8 +195,13 @@ fn replayable(messages: Vec<Message>) -> Vec<Message> {
                 if !calls.is_empty() || results != open_calls {
                     break;
                 }
+                // A request, with nothing of a turn before it still open.
+                let a_request = open_calls.is_empty();
                 open_calls.clear();
                 kept.push(message);
+                if a_request {
+                    complete = kept.len();
+                }
             }
             Role::Assistant => {
                 if !results.is_empty() {
@@ -802,7 +822,7 @@ mod tests {
     #[test]
     fn a_turn_that_was_cut_off_is_dropped() {
         for (name, tail) in [
-            ("a message nobody answered", vec![user("and now?")]),
+            ("a message nobody answered", vec![user("go")]),
             ("calls with no results", vec![user("go"), calling(&["c"])]),
             (
                 "results with no reply",
@@ -812,8 +832,49 @@ mod tests {
             let mut saved = vec![user("hello"), assistant("hi")];
             saved.extend(tail);
             let mut conversation = Conversation::default();
-            assert_eq!(conversation.restore(saved), 2, "{name}");
+            // The request stays; what the turn did after it does not.
+            assert_eq!(conversation.restore(saved), 3, "{name}");
+            assert_eq!(
+                shape_of(conversation.messages()),
+                ["User:text", "Assistant:text", "User:text"],
+                "{name}"
+            );
+            // The next message joins the request, so the model reads both.
+            conversation.push_user_text("continue".into());
+            assert_eq!(conversation.messages().len(), 3, "{name}");
+            assert!(matches!(
+                &conversation.messages()[2].content[0],
+                ContentBlock::Text { text } if text == "go\n\ncontinue"
+            ));
         }
+    }
+
+    /// What is saved as a turn starts already holds the request, and a
+    /// first request that was never answered comes back on its own.
+    #[test]
+    fn a_turn_is_saved_as_it_starts_with_its_request() {
+        let mut conversation = Conversation::default();
+        let first = conversation.to_keep_with("separate the stems");
+        assert_eq!(shape_of(&first), ["User:text"]);
+        assert!(
+            conversation.messages().is_empty(),
+            "the history is untouched"
+        );
+
+        let mut after_a_stop = Conversation::default();
+        assert_eq!(after_a_stop.restore(first), 1);
+        after_a_stop.push_user_text("continue".into());
+        assert!(matches!(
+            &after_a_stop.messages()[0].content[0],
+            ContentBlock::Text { text } if text == "separate the stems\n\ncontinue"
+        ));
+
+        conversation.push_user_text("hello".into());
+        conversation.store_assistant(vec![ContentBlock::Text { text: "hi".into() }]);
+        assert_eq!(
+            shape_of(&conversation.to_keep_with("again")),
+            ["User:text", "Assistant:text", "User:text"]
+        );
     }
 
     /// Anything a provider would refuse ends the history before it.
@@ -868,8 +929,18 @@ mod tests {
             let kept_after = after.restore(saved);
             assert_eq!(kept_after, 2 + kept_alone, "{name}");
             assert!(kept_alone <= 2, "{name}");
+            // It ends on a reply, or on a request that calls and answers
+            // nothing: never on a call or a result left hanging.
             let last = after.messages().last().expect("the good exchange");
-            assert_eq!(last.role, Role::Assistant, "{name}");
+            assert!(
+                last.content
+                    .iter()
+                    .all(|block| matches!(block, ContentBlock::Text { .. })),
+                "{name}"
+            );
+            // And it is a history that would be taken back whole again.
+            let kept = after.messages().to_vec();
+            assert_eq!(replayable(kept.clone()).len(), kept.len(), "{name}");
         }
     }
 

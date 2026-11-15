@@ -146,6 +146,28 @@ pub(crate) fn keep_agent_where(kept: bool, state: &AppState, agent: &ai::Agent) 
     }
 }
 
+/// Save the conversation as it stands with `text` about to be sent. Called
+/// as a turn starts, with the agent's mutex held. A long tool (separating
+/// stems) is when Android is most likely to stop the app, and a turn that
+/// never ends is never saved by [`keep_agent`]: without this the assistant
+/// came back with no idea what it had been asked.
+pub fn keep_request(state: &AppState, agent: &ai::Agent, text: &str) {
+    keep_request_where(kept(), state, agent, text);
+}
+
+/// [`keep_request`], with whether conversations are kept passed in.
+pub(crate) fn keep_request_where(kept: bool, state: &AppState, agent: &ai::Agent, text: &str) {
+    if !kept {
+        return;
+    }
+    let Some(dir) = state.agent_chat_dir() else {
+        return;
+    };
+    if let Err(error) = write_agent(&dir, &agent.conversation_to_keep_with(text)) {
+        tracing::warn!(%error, "could not save the request");
+    }
+}
+
 /// What [`load_chat_log`] answers.
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct ChatLog {
