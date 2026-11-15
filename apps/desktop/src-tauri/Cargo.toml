@@ -33,6 +33,8 @@ chrono = "0.4"
 
 ai = { path = "../../../crates/ai" }
 agent_profiles = { path = "../../../crates/agent_profiles" }
+# `peaks.rs` reads a file and reduces it to an outline for the Android timeline.
+audio-decoder = { path = "../../../crates/audio-decoder" }
 audio-engine = { path = "../../../crates/audio-engine" }
 mcp = { path = "../../../crates/mcp" }
 # `ml_runtime_status` (commands.rs) reports which ONNX Runtime library the
@@ -59,6 +61,8 @@ sentry = { version = "=0.49.5", default-features = false, features = ["backtrace
 # The tests open stores the raw way; see `Store::open`. A dev-dependency, so a plain build of this crate has no such open.
 session = { path = "../../../crates/session", features = ["raw-open"] }
 tauri = { version = "2", features = ["test"] }
+# The peaks tests write the WAVs they read.
+hound = "3.5"
 # Timeouts in the tests that wait on a signal, so a hang fails instead of stalling.
 tokio = { version = "1", features = ["time"] }
 tempfile = "3"

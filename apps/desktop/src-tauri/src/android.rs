@@ -68,8 +68,12 @@ pub fn init<R: Runtime>() -> tauri::plugin::TauriPlugin<R> {
 
 /// Call a command of `EdytlabPlugin.kt` and wait for its answer. Blocks, so
 /// it belongs on the blocking pool.
+///
+/// Not named `call`: `tests/main_thread_commands.rs` follows calls by name
+/// to find what can wait on a session lock, and another `call` in this
+/// crate does.
 #[cfg(target_os = "android")]
-fn call<R: Runtime, T: DeserializeOwned>(
+fn ask_android<R: Runtime, T: DeserializeOwned>(
     app: &AppHandle<R>,
     command: &str,
     payload: impl Serialize,
@@ -92,7 +96,7 @@ fn call<R: Runtime, T: DeserializeOwned>(
 }
 
 #[cfg(not(target_os = "android"))]
-fn call<R: Runtime, T: DeserializeOwned>(
+fn ask_android<R: Runtime, T: DeserializeOwned>(
     _app: &AppHandle<R>,
     _command: &str,
     _payload: impl Serialize,
@@ -124,7 +128,7 @@ where
 /// for Android it keeps values in memory, and a saved key is gone at the next
 /// launch. [`init`] installs this in its place.
 ///
-/// Each call waits for Kotlin's answer, as [`call`] does. Kotlin takes the
+/// Each call waits for Kotlin's answer, as [`ask_android`] does. Kotlin takes the
 /// command on Android's main thread, so a call made from that thread would
 /// wait on itself; the keychain is read from the startup thread, the
 /// blocking pool and the commands' own threads.
@@ -133,7 +137,7 @@ struct KeystoreSecrets<R: Runtime>(AppHandle<R>);
 
 impl<R: Runtime> ai::keychain::SecretStore for KeystoreSecrets<R> {
     fn get(&self, account: &str) -> CmdResult<Option<Vec<u8>>> {
-        let answer: serde_json::Value = call(
+        let answer: serde_json::Value = ask_android(
             &self.0,
             "secretGet",
             serde_json::json!({ "account": account }),
@@ -142,7 +146,7 @@ impl<R: Runtime> ai::keychain::SecretStore for KeystoreSecrets<R> {
     }
 
     fn set(&self, account: &str, value: &[u8]) -> CmdResult<()> {
-        call::<R, serde_json::Value>(
+        ask_android::<R, serde_json::Value>(
             &self.0,
             "secretSet",
             serde_json::json!({
@@ -154,7 +158,7 @@ impl<R: Runtime> ai::keychain::SecretStore for KeystoreSecrets<R> {
     }
 
     fn delete(&self, account: &str) -> CmdResult<()> {
-        call::<R, serde_json::Value>(
+        ask_android::<R, serde_json::Value>(
             &self.0,
             "secretDelete",
             serde_json::json!({ "account": account }),
@@ -211,7 +215,7 @@ pub(crate) struct NativeDeviceInfo {
 
 /// Ask Android about the device. `Err` on a desktop.
 pub(crate) fn native_device_info<R: Runtime>(app: &AppHandle<R>) -> CmdResult<NativeDeviceInfo> {
-    call(app, "deviceInfo", serde_json::json!({}))
+    ask_android(app, "deviceInfo", serde_json::json!({}))
 }
 
 /// Where the window is running and how much memory the device has.
@@ -242,25 +246,39 @@ pub async fn device_info<R: Runtime>(app: AppHandle<R>) -> CmdResult<DeviceInfo>
 }
 
 /// What is running that the screen must stay on for (an assistant turn, a
-/// model download), by name. See [`set_busy`].
-static BUSY: std::sync::Mutex<Option<std::collections::BTreeSet<String>>> =
-    std::sync::Mutex::new(None);
+/// model download), one bit each. See [`set_busy`].
+///
+/// Bits in an atomic and not names in a set behind a mutex: this is touched
+/// at the start of every turn, on the async runtime's worker, and nothing
+/// there may wait on a lock (`tests/main_thread_commands.rs`).
+static BUSY: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Add `reason` to `busy` or take it out. Answers the new state of the
-/// screen when this call changed it: `Some(true)` when the set was empty and
-/// no longer is, `Some(false)` when it has just emptied.
-fn note_busy(
-    busy: &mut std::collections::BTreeSet<String>,
-    reason: &str,
-    running: bool,
-) -> Option<bool> {
-    let was_empty = busy.is_empty();
-    if running {
-        busy.insert(reason.to_string());
+/// The bit for `reason`. Two reasons can share one, in which case the first
+/// of them to end lets the screen sleep while the other still runs; with a
+/// turn and three model downloads over 64 bits that is not a case that
+/// comes up, and it costs a dark screen, not work.
+fn busy_bit(reason: &str) -> u64 {
+    // FNV-1a: the same bit for the same name in every build.
+    let hash = reason.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, b| {
+        (h ^ u64::from(b)).wrapping_mul(0x0000_0100_0000_01b3)
+    });
+    1 << (hash % 64)
+}
+
+/// Mark `reason` as running or not. Answers the new state of the screen
+/// when this call changed it: `Some(true)` when nothing was running and now
+/// something is, `Some(false)` when the last thing has just ended.
+fn note_busy(busy: &std::sync::atomic::AtomicU64, reason: &str, running: bool) -> Option<bool> {
+    use std::sync::atomic::Ordering;
+    let bit = busy_bit(reason);
+    let (before, after) = if running {
+        let before = busy.fetch_or(bit, Ordering::SeqCst);
+        (before, before | bit)
     } else {
-        busy.remove(reason);
-    }
-    (was_empty != busy.is_empty()).then_some(!busy.is_empty())
+        let before = busy.fetch_and(!bit, Ordering::SeqCst);
+        (before, before & !bit)
+    };
+    ((before == 0) != (after == 0)).then_some(after != 0)
 }
 
 /// Say that the long work called `reason` has started or ended. While any is
@@ -268,36 +286,39 @@ fn note_busy(
 /// soon after its screen goes off, which would end a stem separation, a
 /// transcription or a model download part way. A no-op on a desktop.
 ///
-/// The call to Android is made from a thread of its own and its failure is
-/// only logged, so the work never waits for it.
+/// The call to Android is made on the blocking pool and its failure is only
+/// logged, so the work never waits for it.
 pub(crate) fn set_busy<R: Runtime>(app: &AppHandle<R>, reason: &str, running: bool) {
     if !cfg!(target_os = "android") {
         return;
     }
-    let change = {
-        let Ok(mut busy) = BUSY.lock() else { return };
-        note_busy(busy.get_or_insert_with(Default::default), reason, running)
+    let Some(on) = note_busy(&BUSY, reason, running) else {
+        return;
     };
-    let Some(on) = change else { return };
     let app = app.clone();
-    std::thread::spawn(move || {
-        if let Err(error) =
-            call::<R, serde_json::Value>(&app, "keepScreenOn", serde_json::json!({ "on": on }))
-        {
+    // On the blocking pool, and not a thread started here by hand: the
+    // scan in `tests/main_thread_commands.rs` follows calls by name, and a
+    // plain thread start reads to it as the reclaimer's, which takes locks.
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = ask_android::<R, serde_json::Value>(
+            &app,
+            "keepScreenOn",
+            serde_json::json!({ "on": on }),
+        ) {
             tracing::warn!(%error, on, "could not change keep-screen-on");
         }
     });
 }
 
 /// [`set_busy`] for as long as this is alive: the screen stays on from
-/// `Busy::start` until the value is dropped, however the work ends.
+/// `Busy::during` until the value is dropped, however the work ends.
 pub(crate) struct Busy<R: Runtime> {
     app: AppHandle<R>,
     reason: &'static str,
 }
 
 impl<R: Runtime> Busy<R> {
-    pub(crate) fn start(app: &AppHandle<R>, reason: &'static str) -> Self {
+    pub(crate) fn during(app: &AppHandle<R>, reason: &'static str) -> Self {
         set_busy(app, reason, true);
         Self {
             app: app.clone(),
@@ -507,7 +528,23 @@ pub(crate) fn delete_project_in(root: &Path, project: &Path, open: Option<&Path>
             return Err("That project is open. Open another one first.".to_string());
         }
     }
-    std::fs::remove_dir_all(&project).map_err(|e| format!("could not delete the project: {e}"))
+    // The window having left a project does not mean nothing is in it: a
+    // turn that began there keeps its store until it ends. A private open
+    // is refused while any store of the folder is alive, and while this one
+    // lives nothing else can open the folder, so the delete has it alone.
+    let claim =
+        match session::Store::open_private(&project) {
+            Ok(store) => store,
+            Err(session::Error::AlreadyOpen { .. }) => return Err(
+                "The assistant is still working in that project. Try again when it has finished."
+                    .to_string(),
+            ),
+            Err(e) => return Err(format!("could not delete the project: {e}")),
+        };
+    let removed =
+        std::fs::remove_dir_all(&project).map_err(|e| format!("could not delete the project: {e}"));
+    drop(claim);
+    removed
 }
 
 /// Delete a project kept in the app's storage, with all its audio and
@@ -536,6 +573,79 @@ pub async fn delete_managed_project<R: Runtime>(
 }
 
 // ---------------------------------------------------------------------------
+// The back button and the microphone
+// ---------------------------------------------------------------------------
+
+/// Put the app behind the launcher, as the back button does at the top of
+/// any Android app. The process goes on: a turn or a download that is
+/// running is not ended. The window calls this when a press of Back has
+/// nothing left to close.
+#[tauri::command]
+pub async fn leave_app<R: Runtime>(app: AppHandle<R>) -> CmdResult<()> {
+    off_thread(move || {
+        ask_android::<R, serde_json::Value>(&app, "leaveApp", serde_json::json!({}))?;
+        Ok(())
+    })
+    .await
+}
+
+/// Whether the answer of `EdytlabPlugin`'s permission commands says the
+/// microphone may be used. They answer `{ "microphone": "granted" }`, or
+/// `"denied"`, or one of two "not asked yet" states.
+pub(crate) fn microphone_granted(answer: &serde_json::Value) -> bool {
+    answer.get("microphone").and_then(serde_json::Value::as_str) == Some("granted")
+}
+
+/// Make sure the app may use the microphone, asking the person if it has
+/// not been asked. Answers whether it may. The window calls this before
+/// each recording; once granted, it only reads the state and shows nothing.
+///
+/// On a desktop the operating system asks by itself when the device is
+/// opened, so there is nothing to do and the answer is yes.
+#[tauri::command]
+pub async fn ensure_microphone<R: Runtime>(app: AppHandle<R>) -> CmdResult<bool> {
+    if !cfg!(target_os = "android") {
+        return Ok(true);
+    }
+    off_thread(move || {
+        let wanted = serde_json::json!({ "permissions": ["microphone"] });
+        let now: serde_json::Value = ask_android(&app, "checkPermissions", serde_json::json!({}))?;
+        if microphone_granted(&now) {
+            return Ok(true);
+        }
+        // Shows Android's own dialog and answers when it is dismissed. A
+        // person who has refused twice gets no dialog and a plain "denied".
+        let asked: serde_json::Value = ask_android(&app, "requestPermissions", wanted)?;
+        Ok(microphone_granted(&asked))
+    })
+    .await
+}
+
+/// Where a recording called `name` is saved. The window names a take
+/// (`recording_<time>.wav`) and leaves the folder to the backend. On a
+/// desktop that is as it always was: the path as given. On Android a bare
+/// name would land in the working folder, which is the exports folder, so
+/// it goes into the open project's `imports/` beside the audio the person
+/// brought in, where the project keeps it.
+pub(crate) fn recording_destination(name: &str, project: Option<&Path>) -> PathBuf {
+    let path = PathBuf::from(name);
+    match project {
+        Some(project) if cfg!(target_os = "android") && path.is_relative() => {
+            recording_in_project(project, &path)
+        }
+        _ => path,
+    }
+}
+
+/// `<project>/imports/<name>`, with the folder made.
+pub(crate) fn recording_in_project(project: &Path, name: &Path) -> PathBuf {
+    let dir = project.join(IMPORTS_DIR);
+    // A folder that cannot be made shows as the save failing, with its reason.
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join(name.file_name().unwrap_or(name.as_os_str()))
+}
+
+// ---------------------------------------------------------------------------
 // Audio in: the picker's files
 // ---------------------------------------------------------------------------
 
@@ -561,20 +671,17 @@ pub async fn import_audio<R: Runtime>(
     if uris.is_empty() {
         return Err("no files provided".to_string());
     }
-    let state = AppState::clone(state.inner());
-    off_thread(move || {
-        let project = state
-            .project_dir
-            .lock()
-            .map_err(|_| "the project lock is poisoned".to_string())?
-            .clone()
-            .ok_or_else(|| "No project is open.".to_string())?;
+    // On the blocking pool, as `batch_load` is: copying is slow, and the
+    // load waits for the store, the engine and the dispatcher, which a
+    // running tool can hold.
+    crate::commands::blocking(&state, move |state| {
+        let project = crate::commands::current_project_dir(state).map_err(|e| e.to_string())?;
         let imports = project.join(IMPORTS_DIR);
 
         let mut copied = Vec::new();
         let mut failures = Vec::new();
         for uri in &uris {
-            match call::<R, CopiedFile>(
+            match ask_android::<R, CopiedFile>(
                 &app,
                 "copyUriToFile",
                 serde_json::json!({ "uri": uri, "dir": imports }),
@@ -594,7 +701,7 @@ pub async fn import_audio<R: Runtime>(
             });
         }
 
-        let mut result = crate::commands::batch_load_inner(&state, &copied)?;
+        let mut result = crate::commands::batch_load_inner(state, &copied)?;
         for refused in &result.failures {
             // Nothing in the project names it, so it would only take space.
             let _ = std::fs::remove_file(&refused.path);
@@ -756,7 +863,11 @@ pub async fn share_export<R: Runtime>(app: AppHandle<R>, name: String) -> CmdRes
     let dir = exports_dir(&app)?;
     off_thread(move || {
         let path = export_file(&dir, &name)?;
-        call::<R, serde_json::Value>(&app, "shareFile", serde_json::json!({ "path": path }))?;
+        ask_android::<R, serde_json::Value>(
+            &app,
+            "shareFile",
+            serde_json::json!({ "path": path }),
+        )?;
         Ok(())
     })
     .await
@@ -773,7 +884,7 @@ pub async fn save_export_to<R: Runtime>(
     let dir = exports_dir(&app)?;
     off_thread(move || {
         let path = export_file(&dir, &name)?;
-        call::<R, serde_json::Value>(
+        ask_android::<R, serde_json::Value>(
             &app,
             "copyFileToUri",
             serde_json::json!({ "path": path, "uri": uri }),
@@ -836,18 +947,65 @@ mod tests {
 
     #[test]
     fn the_screen_changes_only_when_the_first_work_starts_and_the_last_ends() {
-        let mut busy = std::collections::BTreeSet::new();
-        assert_eq!(note_busy(&mut busy, "turn", true), Some(true));
-        assert_eq!(note_busy(&mut busy, "download:htdemucs", true), None);
+        let busy = std::sync::atomic::AtomicU64::new(0);
+        assert_ne!(busy_bit("turn"), busy_bit("download:htdemucs"));
+        assert_eq!(note_busy(&busy, "turn", true), Some(true));
+        assert_eq!(note_busy(&busy, "download:htdemucs", true), None);
         // Said twice, counted once.
-        assert_eq!(note_busy(&mut busy, "turn", true), None);
-        assert_eq!(note_busy(&mut busy, "turn", false), None);
-        assert_eq!(
-            note_busy(&mut busy, "download:htdemucs", false),
-            Some(false)
-        );
+        assert_eq!(note_busy(&busy, "turn", true), None);
+        assert_eq!(note_busy(&busy, "turn", false), None);
+        assert_eq!(note_busy(&busy, "download:htdemucs", false), Some(false));
         // Ending what never started changes nothing.
-        assert_eq!(note_busy(&mut busy, "turn", false), None);
+        assert_eq!(note_busy(&busy, "turn", false), None);
+    }
+
+    #[test]
+    fn only_a_granted_microphone_is_a_yes() {
+        use serde_json::json;
+        assert!(microphone_granted(&json!({ "microphone": "granted" })));
+        for no in [
+            json!({ "microphone": "denied" }),
+            json!({ "microphone": "prompt" }),
+            json!({ "microphone": "prompt-with-rationale" }),
+            json!({}),
+            json!(null),
+        ] {
+            assert!(!microphone_granted(&no), "{no}");
+        }
+    }
+
+    #[test]
+    fn a_take_goes_into_the_projects_imports_folder_by_its_name_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("p");
+        let at = recording_in_project(&project, Path::new("recording_17.wav"));
+        assert_eq!(at, project.join("imports").join("recording_17.wav"));
+        assert!(project.join("imports").is_dir());
+        // A name that tries to climb is cut to its last part.
+        let climbing = recording_in_project(&project, Path::new("../../x/take.wav"));
+        assert_eq!(climbing, project.join("imports").join("take.wav"));
+        // Off Android the path is the caller's, as it always was.
+        if !cfg!(target_os = "android") {
+            assert_eq!(
+                recording_destination("recording_17.wav", Some(&project)),
+                PathBuf::from("recording_17.wav")
+            );
+        }
+    }
+
+    #[test]
+    fn a_project_with_a_live_store_is_not_deleted_under_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join("projects");
+        let busy = create_project_in(&root, "Busy").unwrap();
+        // A turn that began in the project still holds its store.
+        let held = session::Store::open_shared(&busy).unwrap();
+        let refused = delete_project_in(&root, &busy, None).unwrap_err();
+        assert!(refused.contains("still working"), "{refused}");
+        assert!(busy.is_dir());
+        drop(held);
+        delete_project_in(&root, &busy, None).unwrap();
+        assert!(!busy.exists());
     }
 
     #[test]

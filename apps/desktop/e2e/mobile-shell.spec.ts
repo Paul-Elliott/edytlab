@@ -8,7 +8,15 @@
  * The build is the one that ships; only the backend is the fake.
  */
 
-import { androidCommands, nodeId, ok, readyToLoad, sessionWith, toneTrack } from "./backend";
+import {
+  androidCommands,
+  nodeId,
+  ok,
+  projectWith,
+  readyToLoad,
+  sessionWith,
+  toneTrack,
+} from "./backend";
 import { expect, test } from "./fixtures";
 
 
@@ -213,5 +221,95 @@ test.describe("exports on Android", () => {
 
     await expect(page.getByTestId("exports-saved")).toContainText("mix.wav");
     expect(await app.requestsFor("save_export_to")).toEqual([{ name: "mix.wav", uri: target }]);
+  });
+});
+
+test.describe("the Android back button", () => {
+  /** One press, as `useBackButton` hears it from Android. */
+  const pressBack = (page: import("@playwright/test").Page) =>
+    page.evaluate(() => window.dispatchEvent(new Event("edytlab:back")));
+
+  test("closes the sheet on top before anything else", async ({ app }) => {
+    await app.boot(ready());
+    const page = app.page;
+    await page.getByTestId("mobile-menu-button").tap();
+    await page.getByTestId("menu-projects").tap();
+    await expect(page.getByTestId("projects-sheet")).toBeVisible();
+
+    await pressBack(page);
+    await expect(page.getByTestId("projects-sheet")).toHaveCount(0);
+    // It did not also leave the app.
+    expect(await app.requestsFor("leave_app")).toEqual([]);
+  });
+
+  test("goes back to the chat on a phone, then leaves the app", async ({ app }, info) => {
+    // `leave_app` is `CmdResult<()>`: null once the task is behind the launcher.
+    await app.boot({ ...ready(), leave_app: ok(null) });
+    const page = app.page;
+
+    if (info.project.name === "phone") {
+      await page.getByTestId("mobile-tab-timeline").tap();
+      await expect(page.getByTestId("work-pane")).toBeVisible();
+      await pressBack(page);
+      await expect(page.getByTestId("chat-pane")).toBeVisible();
+      expect(await app.requestsFor("leave_app")).toEqual([]);
+    }
+
+    await pressBack(page);
+    await expect.poll(() => app.requestsFor("leave_app")).toHaveLength(1);
+  });
+});
+
+test.describe("recording on Android", () => {
+  test("asks for the microphone first, and does not record without it", async ({ app }) => {
+    await app.boot({
+      ...ready(),
+      // `ensure_microphone` answers whether the app may record: false when
+      // the person refuses Android's dialog.
+      ensure_microphone: ok(false),
+    });
+    const page = app.page;
+    await page.getByTestId("record-btn").tap();
+
+    await expect(page.getByTestId("render-error")).toContainText("needs the microphone");
+    expect(await app.requestsFor("ensure_microphone")).toHaveLength(1);
+    // The recorder is never opened.
+    expect(await app.requestsFor("start_recording")).toEqual([]);
+  });
+
+  test("records once the microphone is allowed", async ({ app }) => {
+    await app.boot({
+      ...ready(),
+      ensure_microphone: ok(true),
+      // `start_recording` answers the string "recording started".
+      start_recording: ok("recording started"),
+    });
+    const page = app.page;
+    await page.getByTestId("record-btn").tap();
+    await expect(page.getByRole("button", { name: "Stop recording" })).toBeVisible();
+    expect(await app.requestsFor("start_recording")).toHaveLength(1);
+  });
+});
+
+test.describe("waveforms on Android", () => {
+  test("a lane draws from the backend's peaks and does not fetch the file to decode", async ({ app }, info) => {
+    const track = toneTrack();
+    await app.boot({ ...projectWith([track], nodeId(3)), ...androidCommands() });
+    const page = app.page;
+    if (info.project.name === "phone") await page.getByTestId("mobile-tab-timeline").tap();
+
+    await expect(page.getByTestId("ruler")).toContainText("0:03");
+    expect(await app.requestsFor("waveform_peaks")).toEqual([{ path: track.audio_path }]);
+    // WaveSurfer's own fetch of the whole file (a `fetch`, with no Range
+    // header) is what the peaks replace. Its audio element may still ask
+    // for the file's first bytes to read the length; that is not a decode.
+    await app.settle();
+    const whole = await page.evaluate(() =>
+      performance
+        .getEntriesByType("resource")
+        .filter((e) => e.name.includes("tone-3s") && (e as PerformanceResourceTiming).initiatorType === "fetch")
+        .length,
+    );
+    expect(whole, "WaveSurfer fetched the file to decode it").toBe(0);
   });
 });

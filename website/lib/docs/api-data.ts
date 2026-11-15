@@ -229,6 +229,21 @@ export const apiAreas: ApiArea[] = [
             returns: "void",
             desc: "Android only. Write one export into the document the system's save dialog created at uri (a content:// address).",
           },
+          {
+            name: "waveformPeaks(path)",
+            returns: "WaveformPeaks",
+            desc: "The waveform of one of the session's audio files as peaks: { duration_sec, peaks }, with at most 200 values a second (400,000 in all), each the loudest sample of its stretch from 0 to 32767. The Android app's lanes draw from it so the window does not decode whole files; a WAV is read a chunk at a time. Refused for a path outside what the window may already load.",
+          },
+          {
+            name: "ensureMicrophone()",
+            returns: "boolean",
+            desc: "Android only in effect. Make sure the app may use the microphone, showing Android's permission dialog if the person has not been asked. Resolves with whether recording may start. On a desktop it resolves true and asks nothing, since the operating system asks when the device is opened.",
+          },
+          {
+            name: "leaveApp()",
+            returns: "void",
+            desc: "Android only. Put the app behind the launcher without ending it, as Back does at the top of an Android app. A turn or a download that is running goes on.",
+          },
         ],
       },
       {

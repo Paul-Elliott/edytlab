@@ -245,7 +245,7 @@ fn lock_std<'a, T>(
 ///
 /// What goes here is any command that can wait on a lock a tool holds.
 /// `tests/main_thread_commands.rs` checks that none is left outside it.
-async fn blocking<T, F>(state: &State<'_, AppState>, body: F) -> CmdResult<T>
+pub(crate) async fn blocking<T, F>(state: &State<'_, AppState>, body: F) -> CmdResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&AppState) -> CmdResult<T> + Send + 'static,
@@ -3856,7 +3856,7 @@ pub async fn send_message<R: Runtime>(
     // Android: the screen stays on for the length of the turn, or the system
     // would stop a long tool (a stem separation, a transcription) soon after
     // it went dark. Nothing on a desktop.
-    let _busy = crate::android::Busy::start(&app, "turn");
+    let _busy = crate::android::Busy::during(&app, "turn");
     // Build the per-turn SessionContext from the current selection, the
     // annotations on the store head, and the head's tracks (#408), buses
     // (#552) and master chain (#460). We snapshot these before acquiring
@@ -6841,10 +6841,16 @@ fn start_recording_with(
 #[tauri::command]
 pub async fn timer_record(
     state: State<'_, RecorderState>,
+    app_state: State<'_, AppState>,
     output_path: String,
     start_after_sec: Option<f64>,
     duration_sec: Option<f64>,
 ) -> CmdResult<serde_json::Value> {
+    // Where the take is saved (on Android, inside the open project).
+    let take_path = crate::android::recording_destination(
+        &output_path,
+        current_project_dir(&app_state).ok().as_deref(),
+    );
     let schedule = recorder::Schedule {
         start_after_sec,
         duration_sec,
@@ -6877,8 +6883,7 @@ pub async fn timer_record(
         if tools::progress::cancelled() {
             let rec = lock_recorder_slot(&state.0).take();
             if let Some(rec) = rec {
-                let path = std::path::PathBuf::from(&output_path);
-                let _ = rec.stop_and_save(&path);
+                let _ = rec.stop_and_save(&take_path);
             }
             tools::progress::report(serde_json::json!({
                 "kind": "timer_record", "done": true, "cancelled": true,
@@ -6911,8 +6916,7 @@ pub async fn timer_record(
     let rec = lock_recorder_slot(&state.0)
         .take()
         .ok_or_else(|| "the recording vanished before it could be saved".to_string())?;
-    let path = std::path::PathBuf::from(&output_path);
-    let (saved, sr, ch) = rec.stop_and_save(&path).map_err(|e| e.to_string())?;
+    let (saved, sr, ch) = rec.stop_and_save(&take_path).map_err(|e| e.to_string())?;
 
     tools::progress::report(serde_json::json!({
         "kind": "timer_record", "done": true, "cancelled": false,
@@ -7264,12 +7268,17 @@ pub fn cancel_punch_record() -> CmdResult<()> {
 #[tauri::command]
 pub fn stop_recording(
     state: State<'_, RecorderState>,
+    app_state: State<'_, AppState>,
     output_path: String,
 ) -> CmdResult<serde_json::Value> {
     let rec = lock_recorder_slot(&state.0)
         .take()
         .ok_or_else(|| "no active recording".to_string())?;
-    let path = std::path::PathBuf::from(&output_path);
+    // On Android, inside the open project; elsewhere the path as given.
+    let path = crate::android::recording_destination(
+        &output_path,
+        current_project_dir(&app_state).ok().as_deref(),
+    );
     let (saved_path, sr, ch) = rec.stop_and_save(&path).map_err(|e| e.to_string())?;
     Ok(serde_json::json!({
         "path": saved_path.to_string_lossy(),

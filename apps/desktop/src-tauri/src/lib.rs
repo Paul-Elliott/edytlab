@@ -14,6 +14,7 @@ pub mod crash_reports;
 pub mod events;
 pub mod mcp_tool;
 pub mod paths;
+pub mod peaks;
 pub mod project;
 pub mod punch;
 pub mod reclaimer;
@@ -443,6 +444,9 @@ pub fn run() {
             crate::android::delete_export,
             crate::android::share_export,
             crate::android::save_export_to,
+            crate::android::leave_app,
+            crate::android::ensure_microphone,
+            crate::peaks::waveform_peaks,
             send_message,
             set_api_key,
             set_api_key_for,

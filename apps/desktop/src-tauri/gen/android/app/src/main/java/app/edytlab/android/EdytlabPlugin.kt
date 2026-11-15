@@ -283,6 +283,17 @@ class EdytlabPlugin(private val activity: Activity) : Plugin(activity) {
   }
 
   /**
+   * Put the app behind the launcher without ending it: what Back does at
+   * the top of an Android app. The window asks for this when a press of
+   * Back has nothing left to close.
+   */
+  @Command
+  fun leaveApp(invoke: Invoke) {
+    activity.runOnUiThread { activity.moveTaskToBack(true) }
+    invoke.resolve(JSObject())
+  }
+
+  /**
    * Facts about this device: its memory (which decides whether stem
    * separation may run), where the system unpacked the app's native
    * libraries (where the ONNX Runtime library is), and what it is.

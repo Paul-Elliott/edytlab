@@ -1795,3 +1795,32 @@ export const shareExport = (name: string): Promise<void> =>
 /** Write one export into the document the save dialog created at `uri`. */
 export const saveExportTo = (name: string, uri: string): Promise<void> =>
   invoke<void>("save_export_to", { name, uri });
+
+/**
+ * Android only. Put the app behind the launcher, as the back button does at
+ * the top of any Android app. The app keeps running: a turn or a download
+ * in progress goes on.
+ */
+export const leaveApp = (): Promise<void> => invoke<void>("leave_app");
+
+/** What `waveform_peaks` answers: a file's outline for the timeline. */
+export interface WaveformPeaks {
+  /** The length of the audio, in seconds. */
+  duration_sec: number;
+  /** The loudest sample of each stretch of the file, 0 to 32767. */
+  peaks: number[];
+}
+
+/**
+ * The waveform of one of the session's files as peaks, worked out by the
+ * backend so the window does not decode the file to draw it. The Android
+ * app's lanes use it; `path` must be a file the window could already load.
+ */
+export const waveformPeaks = (path: string): Promise<WaveformPeaks> =>
+  invoke<WaveformPeaks>("waveform_peaks", { path });
+
+/**
+ * Android only. Ask for the microphone if the app does not have it yet.
+ * Resolves with whether recording may start.
+ */
+export const ensureMicrophone = (): Promise<boolean> => invoke<boolean>("ensure_microphone");

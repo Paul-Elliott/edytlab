@@ -1071,5 +1071,15 @@ export function androidCommands({
     }),
     list_managed_projects: ok(projects),
     list_exports: ok(exports),
+    // The back button's listener (`useBackButton`). Tauri's core `app`
+    // plugin answers `Ok(())` to both; the presses themselves a test makes
+    // with the window event the hook turns them into.
+    // `waveform_peaks` reads the file and reduces it (`peaks.rs`). The
+    // fixtures are tones of a steady level, so their outline is flat: 200
+    // peaks a second at that level. A test of a lane's picture gives the
+    // file's own answer with `peaksFor`.
+    waveform_peaks: ok({ duration_sec: 3, peaks: Array.from({ length: 600 }, () => 16384) }),
+    "plugin:app|register_listener": ok(null),
+    "plugin:app|remove_listener": ok(null),
   };
 }

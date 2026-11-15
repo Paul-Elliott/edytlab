@@ -1528,9 +1528,11 @@ version = "0.9.4"
 dependencies = [
  "agent_profiles",
  "ai",
+ "audio-decoder",
  "audio-engine",
  "chrono",
  "hex",
+ "hound",
  "keyring",
  "mcp",
  "memory",

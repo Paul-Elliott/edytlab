@@ -55,7 +55,9 @@ const LANE_HEIGHT = 72;
  * loads its element (see the lane's `load`). Not a duration anyone reads. */
 const LANE_DURATION_HINT = 1;
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { isAndroid } from "../lib/platform";
 import type { Marker } from "../lib/tauri-bridge";
+import { waveformPeaks } from "../lib/tauri-bridge";
 import { isMissingFileError } from "../lib/mixState";
 import { snapRange } from "../lib/zeroCrossing";
 import { AutomationLane } from "./AutomationLane";
@@ -463,6 +465,8 @@ function TrackLane({
   const spectrogramHostRef = useRef<HTMLDivElement>(null);
   const waveformWrapperRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WaveSurfer | null>(null);
+  /** True while the lane is drawn from backend peaks, not decoded audio. */
+  const peaksOnlyRef = useRef(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   // Which fader's slider is held down, for the readout's colour. Two
@@ -697,7 +701,33 @@ function isAbort(err: unknown): boolean {
       // decodes, unless it is given a duration, and an element that never
       // loads never sends one. This figure only releases that wait: the
       // lane's duration is read from the decoded audio.
-      ws.load(url, undefined, LANE_DURATION_HINT).catch(fail);
+      const decodeHere = () => {
+        peaksOnlyRef.current = false;
+        ws.load(url, undefined, LANE_DURATION_HINT).catch(fail);
+      };
+      if (isAndroid()) {
+        // The Android app draws from peaks the backend worked out
+        // (`waveform_peaks`), and decodes nothing here: a decoded song is
+        // over a hundred megabytes a lane, which a phone's WebView does
+        // not have beside everything else. If the backend cannot say, the
+        // lane decodes as it does on a desktop.
+        waveformPeaks(audioPath).then(
+          (outline) => {
+            if (!current) return;
+            peaksOnlyRef.current = true;
+            ws.load(
+              url,
+              [Float32Array.from(outline.peaks, (v) => v / 32767)],
+              outline.duration_sec,
+            ).catch(fail);
+          },
+          () => {
+            if (current) decodeHere();
+          },
+        );
+      } else {
+        decodeHere();
+      }
     } catch (err) {
       fail(err);
     }
@@ -872,6 +902,9 @@ function isAbort(err: unknown): boolean {
   const maybeSnap = useCallback(
     (range: Selection): Selection => {
       if (!snapToZero) return range;
+      // Drawn from peaks (the Android app): there are no samples here to
+      // find a crossing in, only the outline, so the range is left as drawn.
+      if (peaksOnlyRef.current) return range;
       const ws = wsRef.current;
       if (!ws) return range;
       if (!(duration > 0) || range.end > duration + 1e-6) return range;
@@ -1671,7 +1704,11 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
 
       try {
         void to
-          .load(convertFileSrc(mixPath))
+          // The mix players are heard, never seen. On Android they are
+          // given a flat outline, so WaveSurfer streams the file through
+          // its audio element and does not also fetch and decode all of it
+          // (the length still comes from the element).
+          .load(convertFileSrc(mixPath), isAndroid() ? [new Float32Array(2)] : undefined)
           .then(() => {
             if (superseded) return;
             // Where the outgoing side is *now*, not where it was when the
@@ -2424,16 +2461,20 @@ export const Timeline = forwardRef<TimelineHandle, TimelineProps>(
             >
               ↺
             </button>
-            <button
-              type="button"
-              data-testid="spectrogram-btn"
-              onClick={() => onSpectrogramChange?.(!spectrogramEnabled)}
-              data-active={spectrogramEnabled ? "true" : "false"}
-              className="btn-tool text-xs px-2 py-1 rounded transition"
-              title="Toggle spectrogram"
-            >
-              Spec
-            </button>
+            {/* A spectrogram is worked out from the decoded samples, which the
+                Android app does not hold (its lanes draw from peaks). */}
+            {isAndroid() ? null : (
+              <button
+                type="button"
+                data-testid="spectrogram-btn"
+                onClick={() => onSpectrogramChange?.(!spectrogramEnabled)}
+                data-active={spectrogramEnabled ? "true" : "false"}
+                className="btn-tool text-xs px-2 py-1 rounded transition"
+                title="Toggle spectrogram"
+              >
+                Spec
+              </button>
+            )}
             <span
               style={{
                 fontFamily: "var(--font-mono)",

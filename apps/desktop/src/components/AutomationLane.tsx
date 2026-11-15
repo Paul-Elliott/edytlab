@@ -345,9 +345,13 @@ export function AutomationLane({
     };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    // A touch the system takes away ends like a release: the point stays
+    // where the finger last had it.
+    window.addEventListener("pointercancel", onUp);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onUp);
     };
   }, [drag, toSeconds, toDb, commit]);
 
@@ -478,6 +482,8 @@ export function AutomationLane({
                   marginLeft: -HIT_RADIUS_PX,
                   marginTop: -HIT_RADIUS_PX,
                   borderRadius: "50%",
+                  // A finger on a point moves the point, not the page.
+                  touchAction: "none",
                   background: "var(--accent)",
                   border: "1px solid var(--surface)",
                   padding: 0,

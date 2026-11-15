@@ -8,6 +8,7 @@
  * buttons re-enable pointer events.
  */
 
+import { isAndroid } from "../lib/platform";
 import type { Marker } from "../lib/tauri-bridge";
 import { pctOf, type TimeSpan } from "../lib/timelineViewport";
 
@@ -84,7 +85,7 @@ export function MarkerLayer({
             {/* Label */}
             <button
               type="button"
-              title={`Seek to ${m.name}; right-click to remove`}
+              title={`Seek to ${m.name}; ${isAndroid() ? "press and hold" : "right-click"} to remove`}
               onClick={() => onSeek(t)}
               onContextMenu={(e) => {
                 e.preventDefault();

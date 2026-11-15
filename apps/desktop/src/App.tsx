@@ -119,8 +119,15 @@ import { readSavedTrail } from "./lib/headTrail";
 
 import type { LeftView } from "./lib/views";
 import { useFormFactor } from "./lib/platform";
+import { useBackButton } from "./hooks/useBackButton";
 import { pickAudioUris } from "./lib/file-open";
-import { deviceInfo, exportDestination, importAudio, type DeviceInfo } from "./lib/tauri-bridge";
+import {
+  deviceInfo,
+  ensureMicrophone,
+  exportDestination,
+  importAudio,
+  type DeviceInfo,
+} from "./lib/tauri-bridge";
 import { MobileHeader } from "./components/mobile/MobileHeader";
 import { MobileTabBar, type PhonePane } from "./components/mobile/MobileTabBar";
 import { MenuSheet, type MenuItem } from "./components/mobile/MenuSheet";
@@ -241,6 +248,15 @@ function AppSession() {
     setPhonePane(pane);
     if (pane !== "chat") setLeftView(pane);
   }, []);
+  // The Android back button: dialogs first (the hook closes those), then a
+  // phone's way back to the chat, then out of the app.
+  useBackButton(android, () => {
+    if (phone && phonePane !== "chat") {
+      setPhonePane("chat");
+      return true;
+    }
+    return false;
+  });
   const [keyConfigured, setKeyConfigured] = useState<boolean | null>(null);
   // Whether the launch-time `has_api_key` is still pending. It is while
   // the backend reads the keychain, which can be as long as a locked
@@ -1568,13 +1584,28 @@ function AppSession() {
   // what stays here is the mapping onto state.
   const handleStartRecording = useCallback(async () => {
     setRenderError(null);
+    // Android asks the person for the microphone the first time, and the
+    // recorder cannot open it until they have said yes.
+    if (android) {
+      try {
+        if (!(await ensureMicrophone())) {
+          setRenderError(
+            "edytlab needs the microphone to record. Allow it for edytlab in Android's settings, then tap Record again.",
+          );
+          return;
+        }
+      } catch (e) {
+        setRenderError(`Could not ask for the microphone: ${String(e)}`);
+        return;
+      }
+    }
     const outcome = await startTake(startRecording);
     if (outcome.kind === "recording") {
       setIsRecording(true);
     } else {
       setRenderError(outcome.message);
     }
-  }, []);
+  }, [android]);
 
   const handleStopRecording = useCallback(async () => {
     setRenderError(null);

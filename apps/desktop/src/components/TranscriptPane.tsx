@@ -265,6 +265,65 @@ export function TranscriptPane({
           </span>
         );
       })}
+      {/* The Android app has no Delete or Escape key and no double-click:
+          with words selected, these do what those do. It stays at the
+          bottom of the pane, over the text, wherever the pane is scrolled. */}
+      {android && span ? (
+        <div
+          data-testid="transcript-actions"
+          style={{
+            position: "sticky",
+            bottom: 0,
+            display: "flex",
+            gap: 8,
+            marginTop: 16,
+            padding: "10px 0",
+            background: "var(--surface)",
+            borderTop: "1px solid var(--border)",
+            lineHeight: 1.2,
+          }}
+        >
+          {onCutWords && cutBlockedReason === null ? (
+            <button
+              type="button"
+              data-testid="transcript-cut"
+              className="btn-danger rounded-md px-3 text-sm"
+              onClick={() => {
+                onCutWords(span.from, span.to);
+                setAnchor(null);
+                setFocus(null);
+              }}
+            >
+              Cut {span.to - span.from === 1 ? "word" : `${span.to - span.from} words`}
+            </button>
+          ) : null}
+          {onSeek ? (
+            <button
+              type="button"
+              data-testid="transcript-goto"
+              className="btn-secondary rounded-md px-3 text-sm"
+              onClick={() => {
+                const first = words[span.from];
+                if (first) onSeek(first.start_sec);
+              }}
+            >
+              Go to
+            </button>
+          ) : null}
+          <button
+            type="button"
+            data-testid="transcript-clear"
+            className="btn-secondary rounded-md px-3 text-sm"
+            onClick={() => {
+              setAnchor(null);
+              setFocus(null);
+              onSelectRange?.(null);
+            }}
+          >
+            Clear
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

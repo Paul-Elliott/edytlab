@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { isDerivedAudioPath } from "../lib/derivedAudio";
+import { isAndroid } from "../lib/platform";
 import type { ClipSummary } from "../lib/tauri-bridge";
 import { pctOf, type TimeSpan } from "../lib/timelineViewport";
 
@@ -224,13 +225,22 @@ export function ClipStrip({
       if (!moved) return; // a click, not a drag — selection only
       onMoveClip?.(drag.clipIndex, Math.max(0, drag.originStart + pxToSec(dx)));
     };
+    // A drag the system takes away (a touch it turns into a scroll, an
+    // incoming call) ends with no release: put the chip back where the
+    // session has it, and move nothing.
+    const onCancel = () => {
+      setDrag(null);
+      setDraft(clips);
+    };
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
     return () => {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
     };
-  }, [drag, pxToSec, onMoveClip]);
+  }, [drag, pxToSec, onMoveClip, clips]);
 
   const onKey = useCallback(
     (e: React.KeyboardEvent, clipIndex: number) => {
@@ -280,7 +290,23 @@ export function ClipStrip({
           color: "var(--text-dim)",
         }}
       >
-        {draft.length === 1 ? "1 clip" : `${draft.length} clips`}
+        {/* The Android app has no Delete key: with a clip selected, this
+            cell is the way to remove it. */}
+        {isAndroid() && selectedClip !== null && onRemoveClip && draft[selectedClip] ? (
+          <button
+            type="button"
+            data-testid="clip-delete"
+            onClick={() => onRemoveClip(selectedClip)}
+            className="btn-danger rounded px-2"
+            style={{ fontSize: 10, minHeight: 0, lineHeight: "16px" }}
+          >
+            Delete clip
+          </button>
+        ) : draft.length === 1 ? (
+          "1 clip"
+        ) : (
+          `${draft.length} clips`
+        )}
       </div>
       <div
         ref={stripRef}
@@ -352,6 +378,9 @@ export function ClipStrip({
                 // holding something looked identical to hovering over
                 // it (#211 phase 2).
                 cursor: dragging ? "grabbing" : "grab",
+                // A finger on a chip moves the chip; the browser must not
+                // take the drag for a scroll.
+                touchAction: "none",
                 transition: still ? undefined : CLIP_MOTION,
               }}
               data-motion={still ? "none" : "clip-travel"}
