@@ -322,8 +322,16 @@ fn library_dir_in_maps(maps: &str, file_name: &str) -> Option<PathBuf> {
             rest = rest.trim_start();
             rest = &rest[rest.find(char::is_whitespace)?..];
         }
-        let path = Path::new(rest.trim());
-        if !path.is_absolute() || path.file_name()? != file_name {
+        // A mapped file's path starts at the root; `[anon:...]` and the like
+        // do not. Asked of the text, not of `Path::is_absolute`: this is a
+        // Linux path whatever system the code was built for, and on Windows
+        // a path with no drive letter is never absolute.
+        let rest = rest.trim();
+        if !rest.starts_with('/') {
+            return None;
+        }
+        let path = Path::new(rest);
+        if path.file_name()? != file_name {
             return None;
         }
         path.parent().map(Path::to_path_buf)
