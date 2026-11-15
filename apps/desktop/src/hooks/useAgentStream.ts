@@ -160,6 +160,9 @@ export interface UseAgentStreamResult {
   pushUserMessage: (text: string) => void;
   /** Reset the transcript, e.g. when switching projects. */
   reset: () => void;
+  /** Replace the transcript with a saved one (`lib/chatLog`): the Android
+   * app, when a project opens. Nothing is streaming or pending after it. */
+  restore: (entries: LogEntry[]) => void;
   /** Non-null while the agent is awaiting approval: of its plan, or of
    *  the first edit it is about to make (#415). */
   pendingPlan: PlanEntry | null;
@@ -463,6 +466,14 @@ export function useAgentStream(): UseAgentStreamResult {
     setAwaiting(false);
   }, []);
 
+  const restore = useCallback((saved: LogEntry[]) => {
+    setEntries(saved);
+    setCurrent("");
+    currentRef.current = "";
+    setPendingPlan(null);
+    setAwaiting(false);
+  }, []);
+
   // The card currently on offer, readable from callbacks that outlive the
   // render they were made in. See `takeDownCard`.
   const pendingPlanRef = useRef<PlanEntry | null>(null);
@@ -528,6 +539,7 @@ export function useAgentStream(): UseAgentStreamResult {
     startAwaiting,
     pushUserMessage,
     reset,
+    restore,
     pendingPlan,
     approvePlan,
     discardPlan,

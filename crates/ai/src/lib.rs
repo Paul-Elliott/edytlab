@@ -722,6 +722,21 @@ impl Agent {
         self.conversation.withdraw_user_text(text)
     }
 
+    /// The conversation as it can be saved and given back to a later agent
+    /// with [`Agent::restore_conversation`]: every message, without the
+    /// model's thinking.
+    pub fn conversation_to_keep(&self) -> Vec<Message> {
+        self.conversation.to_keep()
+    }
+
+    /// Replace the conversation with one saved earlier, and say how many of
+    /// its messages were taken. Only a history that is safe to send again is
+    /// kept: a turn that was cut off, anything malformed and the oldest
+    /// turns of a very long history are left out (see `conversation.rs`).
+    pub fn restore_conversation(&mut self, messages: Vec<Message>) -> usize {
+        self.conversation.restore(messages)
+    }
+
     /// Reset the conversation history. The next [`Agent::turn`] starts
     /// from a clean slate; the dispatcher / store / engine are
     /// untouched.

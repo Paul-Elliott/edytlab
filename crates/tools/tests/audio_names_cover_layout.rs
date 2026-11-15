@@ -622,6 +622,13 @@ const MAY_PUT: &[(&str, usize, &str)] = &[
         "a bundled skill and its manifest",
     ),
     (
+        "desktop/chat_log.rs",
+        1,
+        "the Android app keeps a project's chat in `.audiograph/chat.json` and \
+         `chat-agent.json`, each written beside its name and renamed into place; \
+         neither is audio and neither is in the store's audio folders",
+    ),
+    (
         "desktop/project.rs",
         1,
         "Save As copies the project's other files (nodes, head, metadata) into a new, \

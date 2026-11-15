@@ -1071,6 +1071,10 @@ export function androidCommands({
     }),
     list_managed_projects: ok(projects),
     list_exports: ok(exports),
+    // `load_chat_log` answers the open project's folder and its saved chat
+    // (`chat_log.rs`): none here. `save_chat_log` answers whether it wrote.
+    load_chat_log: ok({ project: "/data/user/0/app.edytlab.android/default-project", entries: [] }),
+    save_chat_log: ok(true),
     // The back button's listener (`useBackButton`). Tauri's core `app`
     // plugin answers `Ok(())` to both; the presses themselves a test makes
     // with the window event the hook turns them into.

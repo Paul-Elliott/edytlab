@@ -28,6 +28,8 @@ const saveState = () => writeFileSync(statePath, JSON.stringify(state, null, 2))
 
 /** A key in the shape Settings accepts, that names what it is. Never sent anywhere. */
 const SMOKE_KEY = "sk-ant-smoke-test-not-a-real-key-0000000000000000";
+// The last line of a chat saved before the restart and looked for after it.
+const SMOKE_REPLY = "Smoke test reply 7c1e: louder by 6 dB.";
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -295,10 +297,48 @@ const phases = {
       assert(outline.duration_sec > 0.8, `the take is ${outline.duration_sec} s long`);
       return `${outline.duration_sec.toFixed(2)} s at ${take.sample_rate} Hz`;
     }],
+    // What the chat pane does each time its entries change. The restart
+    // phase reads it back, from the file and from the screen.
+    ["a chat is saved with the project", async (cdp) => {
+      const log = await invoke(cdp, "load_chat_log");
+      assert(log.project === state.project, `the open project is ${log.project}`);
+      const wrote = await invoke(cdp, "save_chat_log", {
+        project: state.project,
+        entries: [
+          { kind: "message", id: "e1", role: "user", text: "make it 6 dB louder" },
+          { kind: "message", id: "e2", role: "assistant", text: SMOKE_REPLY },
+        ],
+      });
+      assert(wrote === true, `save_chat_log answered ${wrote}`);
+      // Entries offered for a project that is not the open one are refused.
+      const other = await invoke(cdp, "save_chat_log", { project: `${state.project}-other`, entries: [] });
+      assert(other === false, `a save for another project answered ${other}`);
+    }],
   ],
 
   restart: [
     ["the window comes back up", windowDraws],
+    // Nothing here opens the project: the app does, as it starts.
+    ["the app reopens the project that was open last", async (cdp) => {
+      let open = "";
+      for (let i = 0; i < 20 && open !== state.project; i++) {
+        open = (await invoke(cdp, "load_chat_log")).project;
+        if (open !== state.project) await sleep(500);
+      }
+      assert(open === state.project, `the open project is ${open}, not ${state.project}`);
+    }],
+    ["the project's chat is still there", async (cdp) => {
+      const log = await invoke(cdp, "load_chat_log");
+      assert(log.entries.length === 2, `the saved chat has ${log.entries.length} entries`);
+      assert(log.entries[1].text === SMOKE_REPLY, `the last entry is ${JSON.stringify(log.entries[1])}`);
+      // And the window drew it, without being asked.
+      let drawn = false;
+      for (let i = 0; i < 20 && !drawn; i++) {
+        drawn = await evaluate(cdp, `document.body.innerText.includes(${JSON.stringify(SMOKE_REPLY)})`);
+        if (!drawn) await sleep(500);
+      }
+      assert(drawn, "the saved reply is not on screen");
+    }],
     ["the saved key survived the app being stopped", async (cdp) => {
       // The startup reads are off the setup thread; the command waits for them.
       assert((await invoke(cdp, "has_api_key_for", { provider: "anthropic" })) === true, "the key is gone after a restart");

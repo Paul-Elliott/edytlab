@@ -197,7 +197,7 @@ impl From<CommandError> for String {
     }
 }
 
-type CmdResult<T> = std::result::Result<T, String>;
+pub(crate) type CmdResult<T> = std::result::Result<T, String>;
 
 /// Put back any of `node`'s audio the history sweep removed, before a
 /// command renders the node or moves the head to it (#98).
@@ -3958,6 +3958,9 @@ pub async fn send_message<R: Runtime>(
 
     // The rung the turn's provider ended on is kept for the next agent.
     state.chatgpt.end_of_turn();
+    // Whatever the turn added is saved with the project where conversations
+    // are kept (the Android app), failed turn or not: tools may have run.
+    crate::chat_log::keep_agent(&state, agent);
     let outcome = match turn_result {
         Ok(_) => Ok(()),
         // The ChatGPT plan's failures are told apart, in a form the window
@@ -6053,10 +6056,15 @@ fn rebuild_agent_from(
                 Some(body) => agent.with_profile_body(body),
                 None => agent,
             };
-            let agent = match tool_whitelist {
+            let mut agent = match tool_whitelist {
                 Some(list) => agent.with_tool_whitelist(list),
                 None => agent,
             };
+            // Where conversations are kept (the Android app), the agent
+            // starts with the one saved in the project, so a restart, a
+            // change of settings and a return to a project all carry on
+            // from where the chat left off.
+            crate::chat_log::give_back(state, &mut agent, current_project_dir(state).ok());
             Some(agent)
         }
         _ => None,
@@ -11170,6 +11178,59 @@ mod tests {
         state.chatgpt.account_changed();
         rebuild_agent_from(&state, &mut slot, |_| None, |_| None, |_| None);
         assert_eq!(provider_of(&slot).tool_rung(), ToolRung::NamespaceFull);
+    }
+
+    /// Where conversations are kept (the Android app), an agent built for a
+    /// project starts with the conversation saved there, and what it holds
+    /// at the end of a turn is saved back to that project, not to whichever
+    /// one the window has moved to. Where they are not kept, no file is
+    /// read and none is written.
+    #[test]
+    fn an_agent_takes_back_its_projects_conversation_and_saves_to_it() {
+        use ai::anthropic::{ContentBlock, Message, Role};
+        let said = |role, text: &str| Message {
+            role,
+            content: vec![ContentBlock::Text { text: text.into() }],
+        };
+        let dir = tempdir().unwrap();
+        let state = state_with_chatgpt(dir.path(), true);
+        state.set_active_provider("chatgpt".to_string());
+        let project = current_project_dir(&state).expect("a project is open");
+        let saved = vec![
+            said(Role::User, "separate the stems"),
+            said(Role::Assistant, "The stem model is not downloaded."),
+            // A turn the app was stopped in the middle of: not taken back.
+            said(Role::User, "it is there now, try again"),
+        ];
+        crate::chat_log::write_agent(&project, &saved).unwrap();
+
+        let mut slot = None;
+        rebuild_agent_from(&state, &mut slot, |_| None, |_| None, |_| None);
+        let agent = slot.as_mut().expect("an agent is built");
+
+        // Not kept (a desktop): the file is not read and no folder is noted.
+        crate::chat_log::give_back_where(false, &state, agent, Some(project.clone()));
+        assert!(agent.conversation().is_empty());
+        assert_eq!(state.agent_chat_dir(), None);
+        crate::chat_log::keep_agent_where(false, &state, agent);
+        assert_eq!(
+            crate::chat_log::read_agent(&project).len(),
+            3,
+            "left as it was"
+        );
+
+        // Kept: the finished exchange comes back, and the folder is noted.
+        crate::chat_log::give_back_where(true, &state, agent, Some(project.clone()));
+        assert_eq!(agent.conversation().len(), 2);
+        assert_eq!(state.agent_chat_dir(), Some(project.clone()));
+
+        // The window moves to another project. The agent in the slot is
+        // still the first project's, and its turn is saved there.
+        let other = tempdir().unwrap();
+        *state.project_dir.lock().unwrap() = Some(other.path().to_path_buf());
+        crate::chat_log::keep_agent_where(true, &state, agent);
+        assert_eq!(crate::chat_log::read_agent(&project).len(), 2);
+        assert!(crate::chat_log::read_agent(other.path()).is_empty());
     }
 
     /// A saved sign-in the keychain could not be asked for is not "not

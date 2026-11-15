@@ -14,6 +14,8 @@
  */
 
 import { isAndroid } from "../lib/platform";
+import { restoredEntries } from "../lib/chatLog";
+import { loadChatLog, saveChatLog } from "../lib/tauri-bridge";
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 
 import {
@@ -74,6 +76,12 @@ import type { SpeechProblem } from "../lib/tauri-bridge";
 import { focusOnMount } from "../lib/focusOnMount";
 
 export interface ChatProps {
+  /**
+   * The open project, as far as the window knows it (`null` for the one the
+   * app starts in). The Android app reads the project's saved chat whenever
+   * this changes; nothing else looks at it.
+   */
+  projectKey?: string | null;
   rendering?: boolean;
   onRequestRenderPreview?: () => void;
   /**
@@ -152,6 +160,7 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function Chat({
   exporting,
   onOpenSettings,
   providerEpoch,
+  projectKey,
 }: ChatProps, ref: React.Ref<ChatHandle>) {
   const {
     entries,
@@ -160,10 +169,43 @@ export const Chat = forwardRef<ChatHandle, ChatProps>(function Chat({
     stopAwaiting,
     startAwaiting,
     pushUserMessage,
+    restore,
     pendingPlan,
     approvePlan,
     discardPlan,
   } = useAgentStream();
+
+  // The Android app keeps a project's chat with the project (`chat_log.rs`):
+  // the system stops an app that is out of sight, and the chat came back
+  // empty. The saved chat is read when a project opens, and the pane's
+  // entries are saved each time they change.
+  //
+  // `logProject` is the folder the entries on screen belong to, as the
+  // backend named it, and `null` until that project's chat has been read:
+  // between a project opening and its chat arriving, the entries on screen
+  // are still the last project's, and must not be saved as this one's.
+  const logProject = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isAndroid()) return;
+    let cancelled = false;
+    logProject.current = null;
+    loadChatLog()
+      .then((log) => {
+        if (cancelled) return;
+        restore(restoredEntries(log.entries));
+        logProject.current = log.project;
+      })
+      // A chat that cannot be read is an empty one; the project still works.
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [projectKey, restore]);
+  useEffect(() => {
+    const project = logProject.current;
+    if (!isAndroid() || project === null) return;
+    void saveChatLog(project, entries).catch(() => undefined);
+  }, [entries]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);

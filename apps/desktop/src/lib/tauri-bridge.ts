@@ -1824,3 +1824,26 @@ export const waveformPeaks = (path: string): Promise<WaveformPeaks> =>
  * Resolves with whether recording may start.
  */
 export const ensureMicrophone = (): Promise<boolean> => invoke<boolean>("ensure_microphone");
+
+/** What `load_chat_log` answers. */
+export interface ChatLog {
+  /** The open project's folder: what `saveChatLog` is told the entries belong to. */
+  project: string;
+  /** The chat pane's entries as last saved, oldest first. */
+  entries: unknown[];
+}
+
+/**
+ * Android only. The chat pane's entries saved with the open project, so the
+ * chat is still there after the system has stopped the app. Elsewhere the
+ * list is empty.
+ */
+export const loadChatLog = (): Promise<ChatLog> => invoke<ChatLog>("load_chat_log");
+
+/**
+ * Android only. Save the chat pane's entries with `project`, the folder
+ * `loadChatLog` named. Resolves `false`, with nothing written, when another
+ * project has been opened since.
+ */
+export const saveChatLog = (project: string, entries: unknown[]): Promise<boolean> =>
+  invoke<boolean>("save_chat_log", { project, entries });

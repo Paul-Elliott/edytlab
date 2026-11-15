@@ -63,13 +63,27 @@ export function EmptyState({
   onOpenRecent,
   onForgetRecent,
 }: EmptyStateProps) {
+  // The Android app: a phone held upright is a third as wide as the window
+  // this screen was drawn for, and held sideways a third as tall. There the
+  // row of buttons wraps, the screen scrolls when it does not fit (centred
+  // by its first and last child's margins, which a scroll can still reach
+  // the top of, where `justify-center` cuts it off), and nothing names a key.
+  const android = isAndroid();
   return (
     <div
       data-testid="empty-state"
-      className="
+      className={
+        android
+          ? `
+        relative flex h-full w-full flex-col items-center
+        gap-5 overflow-y-auto px-5 py-6 text-center
+        [&>*:first-child]:mt-auto [&>*:last-child]:mb-auto
+      `
+          : `
         relative flex h-full w-full flex-col items-center justify-center
         gap-6 px-12 text-center
-      "
+      `
+      }
     >
       {/* The logo mark: decorative (it is aria-hidden). It builds itself
           once as the screen arrives (`logo-build`: bars, then strokes),
@@ -96,12 +110,21 @@ export function EmptyState({
           style={group(1)}
           className="reveal-in max-w-md text-sm leading-relaxed text-[var(--text-dim)]"
         >
-          Conversational audio editor. Drop a file or pick one to begin —
-          the assistant takes over from there.
+          {android
+            ? "Conversational audio editor. Import a file to begin, and the assistant takes over from there."
+            : "Conversational audio editor. Drop a file or pick one to begin — the assistant takes over from there."}
         </p>
       </div>
 
-      <div style={group(2)} className="reveal-in flex items-center gap-3">
+      <div
+        style={group(2)}
+        data-testid="empty-state-actions"
+        className={
+          android
+            ? "reveal-in flex flex-wrap items-center justify-center gap-3"
+            : "reveal-in flex items-center gap-3"
+        }
+      >
         {onNewProject ? (
           <button
             type="button"
@@ -184,8 +207,9 @@ export function EmptyState({
           >
             <path d="M2 3.2C2 2.54 2.54 2 3.2 2h2.6L7 3.5h3.8c.66 0 1.2.54 1.2 1.2v6.1c0 .66-.54 1.2-1.2 1.2H3.2C2.54 12 2 11.46 2 10.8V3.2Z" />
           </svg>
-          Open Audio…
+          {android ? "Import audio" : "Open Audio…"}
         </button>
+        {android ? null : (
         <span className="font-mono text-[11px] text-[var(--text-faint)]">
           or press{" "}
           <kbd
@@ -200,6 +224,7 @@ export function EmptyState({
             {modifierKey()}+O
           </kbd>
         </span>
+        )}
       </div>
 
       {/* Everything below the buttons arrives together, as the last group. */}
