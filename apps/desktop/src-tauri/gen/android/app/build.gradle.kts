@@ -65,8 +65,14 @@ android {
         }
         getByName("release") {
             signingConfig = signingConfigs.getByName("sideload")
+            // No code shrinking. The Rust side finds EdytlabPlugin, its
+            // commands and their argument classes by name at run time, and
+            // the emulator test runs a debug build, so a class the shrinker
+            // renamed or removed would only show on a person's device. What
+            // it would save is a few hundred kilobytes of a package that is
+            // mostly native libraries.
             optimization {
-               enable = true
+               enable = false
             }
             proguardFiles(
                 *fileTree(".") {

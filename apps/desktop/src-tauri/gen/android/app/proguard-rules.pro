@@ -19,3 +19,7 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+# The app's own Kotlin is reached from Rust by name (the plugin class, its
+# @Command methods) and through Jackson (the @InvokeArg classes). Shrinking
+# is off for now (build.gradle.kts); these keep it working if it is turned on.
+-keep class app.edytlab.android.** { *; }

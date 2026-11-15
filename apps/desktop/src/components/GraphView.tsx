@@ -33,6 +33,7 @@
  * stays parent-only, so the path never moves a node.
  */
 
+import { longPress, type PressPoint } from "../lib/longPress";
 import {
   memo,
   useCallback,
@@ -144,7 +145,7 @@ interface NodeData extends Record<string, unknown> {
   isHead: boolean;
   /** Previewed, and not the head: the head ring is the head's alone. */
   isPreview: boolean;
-  onContextMenu: (e: React.MouseEvent, id: string) => void;
+  onContextMenu: (e: PressPoint, id: string) => void;
 }
 
 /**
@@ -163,7 +164,8 @@ const GraphBubble = memo(function GraphBubble({ data }: NodeProps) {
       data-node-id={bubble.id}
       data-is-head={isHead ? "true" : "false"}
       data-is-preview={isPreview ? "true" : "false"}
-      onContextMenu={(e) => onContextMenu(e, bubble.id)}
+      // A right-click, or on Android a finger held on the step.
+      {...longPress((at) => onContextMenu(at, bubble.id))}
       // Motion (#211). Branching is the product's core idea and this
       // view was silent about it: a new node appeared fully formed and
       // the head ring jumped between bubbles, so neither "something was
@@ -288,7 +290,7 @@ export function GraphView({
   );
 
   const handleContextMenu = useCallback(
-    (e: React.MouseEvent, nodeId: string) => {
+    (e: PressPoint, nodeId: string) => {
       e.preventDefault();
       const rect = containerRef.current?.getBoundingClientRect();
       const x = rect ? e.clientX - rect.left : e.clientX;

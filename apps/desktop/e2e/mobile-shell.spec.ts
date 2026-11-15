@@ -246,6 +246,9 @@ test.describe("the Android back button", () => {
     // `leave_app` is `CmdResult<()>`: null once the task is behind the launcher.
     await app.boot({ ...ready(), leave_app: ok(null) });
     const page = app.page;
+    // The window is up, so the listener the press goes to is attached.
+    await expect(page.getByTestId("mobile-header")).toBeVisible();
+    await app.settle();
 
     if (info.project.name === "phone") {
       await page.getByTestId("mobile-tab-timeline").tap();

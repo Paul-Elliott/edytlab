@@ -181,3 +181,40 @@ test.describe("the transcript under a finger", () => {
       .toEqual([{ track: 0, fromWord: 1, toWord: 4 }]);
   });
 });
+
+test.describe("History under a finger", () => {
+  test("press and hold on a step opens its menu", async ({ app }, info) => {
+    const A = nodeId(3);
+    const B = nodeId(4);
+    await app.boot({
+      ...projectWith([toneTrack()], B),
+      ...androidCommands(),
+      // `get_graph`: a load, and one edit after it, with the head on the edit.
+      get_graph: ok({
+        nodes: [
+          { id: A, parent: null, label: "load", tool: "load", created_at: "2026-09-25T00:00:00Z" },
+          { id: B, parent: A, label: "gain", tool: "gain", created_at: "2026-09-25T00:01:00Z" },
+        ],
+        head: B,
+      }),
+    });
+    const page = app.page;
+    if (info.project.name === "phone") await page.getByTestId("mobile-tab-graph").tap();
+    else await page.getByTestId("tab-graph").tap();
+
+    const bubble = page.getByTestId("graph-bubble").first();
+    await expect(bubble).toBeVisible();
+    const box = (await bubble.boundingBox())!;
+    const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+
+    // A right-click has no finger. Holding still is the touch version, and
+    // the browser reports it as the same event the desktop's menu answers.
+    await touch(page, "touchStart", [at]);
+    await page.waitForTimeout(900);
+    await touch(page, "touchEnd", []);
+
+    const menu = page.getByTestId("graph-context-menu");
+    await expect(menu).toBeVisible();
+    await expect(menu).toContainText("Set as head");
+  });
+});
