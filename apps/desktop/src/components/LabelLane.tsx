@@ -272,7 +272,7 @@ export function LabelLane({
           const r = e.currentTarget.getBoundingClientRect();
           openAdding(secondsAt(e.clientX), e.clientX - r.left, r.width);
         }}
-        title="Double-click to add a label"
+        title={isAndroid() ? "Double-tap to add a label" : "Double-click to add a label"}
         style={{ position: "relative", flex: 1, cursor: "copy", overflow: "hidden" }}
       >
         {duration > 0 &&

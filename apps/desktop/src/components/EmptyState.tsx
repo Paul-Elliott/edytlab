@@ -9,6 +9,7 @@
  * users don't sit and wonder what to do.
  */
 
+import { isAndroid } from "../lib/platform";
 import type { CSSProperties } from "react";
 
 import { LogoMark } from "./LogoMark";
@@ -218,19 +219,36 @@ export function EmptyState({
         {importFormatNames().join(" \u00b7 ")}
       </p>
 
-      <p style={group(3)} className="reveal-in max-w-sm text-xs text-[var(--text-faint)]">
-        Drop an audio file anywhere on this window to load it.
-      </p>
+      {/* The Android app has no drop and no keys: its hints are the
+          gestures that do the same work. */}
+      {isAndroid() ? (
+        <div
+          style={group(3)}
+          data-testid="empty-state-touch-hints"
+          className="reveal-in mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2"
+        >
+          <Shortcut keys={["Tap"]} label="move the playhead" />
+          <Shortcut keys={["Drag"]} label="select region" />
+          <Shortcut keys={["Pinch"]} label="zoom" />
+          <Shortcut keys={["Hold"]} label="more actions" />
+        </div>
+      ) : (
+        <>
+          <p style={group(3)} className="reveal-in max-w-sm text-xs text-[var(--text-faint)]">
+            Drop an audio file anywhere on this window to load it.
+          </p>
 
-      <div
-        style={group(3)}
-        className="reveal-in mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2"
-      >
-        <Shortcut keys={["Space"]} label="play / pause" />
-        <Shortcut keys={["←", "→"]} label="seek 5s" />
-        <Shortcut keys={["Home", "End"]} label="jump" />
-        <Shortcut keys={["Drag"]} label="select region" />
-      </div>
+          <div
+            style={group(3)}
+            className="reveal-in mt-2 flex flex-wrap items-center justify-center gap-x-5 gap-y-2"
+          >
+            <Shortcut keys={["Space"]} label="play / pause" />
+            <Shortcut keys={["←", "→"]} label="seek 5s" />
+            <Shortcut keys={["Home", "End"]} label="jump" />
+            <Shortcut keys={["Drag"]} label="select region" />
+          </div>
+        </>
+      )}
 
       <div style={group(3)} className="reveal-in card mt-4 max-w-xs px-4 py-3 text-left">
         <p className="mb-2 font-mono text-[10px] uppercase tracking-[0.18em] text-[var(--text-dim)]">
