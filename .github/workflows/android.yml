@@ -13,9 +13,10 @@ name: Android
 
 on:
   push:
-    # `main`, and the branch the Android port is being built on: a push to
-    # that branch runs this workflow alone, with no pull request needed.
-    branches: [main, ccr-93910bf3-0w6ucm]
+    # `main` only. A branch is built by its pull request below: building it
+    # on the push as well ran every commit twice, and this repository's
+    # Actions minutes are metered.
+    branches: [main]
     paths:
       - apps/desktop/**
       - crates/**
