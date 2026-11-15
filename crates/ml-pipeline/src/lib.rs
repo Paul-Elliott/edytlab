@@ -62,6 +62,7 @@ use std::path::PathBuf;
 
 mod cache;
 mod download;
+pub mod file_lock;
 pub mod models;
 pub mod onnx_session;
 pub mod runtime;

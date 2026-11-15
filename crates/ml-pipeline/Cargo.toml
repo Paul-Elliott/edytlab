@@ -34,8 +34,17 @@ tracing = "0.1"
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
 
+# `flock`, for `file_lock.rs`: the standard library's file locks are not
+# built for Android in the pinned toolchain.
+[target.'cfg(target_os = "android")'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 # `tests/download.rs` calls the downloader from inside a runtime, as the
 # async Tauri commands do.
 tokio = { version = "1", features = ["rt"] }
+
+# The tests run Android's `flock` path on every unix (`file_lock.rs`).
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

@@ -921,18 +921,28 @@ function isAbort(err: unknown): boolean {
 
   useEffect(() => {
     if (!draftSelection) return;
-    const onMove = (e: { clientX: number }) => {
+    /** The range from where the press began to `clientX`. */
+    const rangeTo = (clientX: number): Selection | null => {
       const drag = dragStateRef.current;
-      if (!drag) return;
-      const px = clamp(e.clientX - drag.rectLeft, 0, drag.rectWidth);
+      if (!drag) return null;
+      const px = clamp(clientX - drag.rectLeft, 0, drag.rectWidth);
       const tEnd = pxToSec(px, viewport);
-      setDraftSelection({
+      return {
         start: Math.min(drag.originSec, tEnd),
         end: Math.max(drag.originSec, tEnd),
-      });
+      };
     };
-    const onUp = () => {
-      const final = draftSelection;
+    const onMove = (e: { clientX: number }) => {
+      const range = rangeTo(e.clientX);
+      if (range) setDraftSelection(range);
+    };
+    // `liftedAt` is where a finger left the surface. A finger's last move
+    // and its lift can arrive before React has drawn the move, and then
+    // `draftSelection` here is still the range before it: the selection
+    // stopped a move short of the finger. The lift says where it was.
+    const onUp = (liftedAt?: number) => {
+      const final =
+        (liftedAt === undefined ? null : rangeTo(liftedAt)) ?? draftSelection;
       const pressedAt = dragStateRef.current?.originSec;
       dragStateRef.current = null;
       setDraftSelection(null);
@@ -949,6 +959,8 @@ function isAbort(err: unknown): boolean {
         onSelectionChange?.(maybeSnap(final));
       }
     };
+    // The mouse's release ends on the draft, as it always has.
+    const onMouseUp = () => onUp();
     // The finger's version of the three above. A second finger is a pinch,
     // which is the timeline's zoom and not a selection, and a cancel is the
     // browser taking the drag for a scroll: both drop the draft.
@@ -958,7 +970,7 @@ function isAbort(err: unknown): boolean {
     const onTouchUp = (e: PointerEvent) => {
       if (e.pointerType !== "touch" || !e.isPrimary) return;
       lastTouchRef.current = Date.now();
-      onUp();
+      onUp(e.clientX);
     };
     const dropDraft = () => {
       dragStateRef.current = null;
@@ -971,14 +983,14 @@ function isAbort(err: unknown): boolean {
       if (e.pointerType === "touch" && !e.isPrimary) dropDraft();
     };
     window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("mouseup", onMouseUp);
     window.addEventListener("pointermove", onTouchMove);
     window.addEventListener("pointerup", onTouchUp);
     window.addEventListener("pointercancel", onTouchCancel);
     window.addEventListener("pointerdown", onSecondFinger);
     return () => {
       window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("mouseup", onMouseUp);
       window.removeEventListener("pointermove", onTouchMove);
       window.removeEventListener("pointerup", onTouchUp);
       window.removeEventListener("pointercancel", onTouchCancel);
