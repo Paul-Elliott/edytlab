@@ -7,6 +7,7 @@
 
 pub mod android;
 pub mod bundled_skills;
+pub mod chat_log;
 pub mod chatgpt;
 pub mod commands;
 pub mod compare;
@@ -447,6 +448,8 @@ pub fn run() {
             crate::android::leave_app,
             crate::android::ensure_microphone,
             crate::peaks::waveform_peaks,
+            crate::chat_log::load_chat_log,
+            crate::chat_log::save_chat_log,
             send_message,
             set_api_key,
             set_api_key_for,

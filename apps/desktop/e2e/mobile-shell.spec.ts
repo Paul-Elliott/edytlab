@@ -10,6 +10,7 @@
 
 import {
   androidCommands,
+  deferred,
   nodeId,
   ok,
   projectWith,
@@ -314,5 +315,134 @@ test.describe("waveforms on Android", () => {
         .length,
     );
     expect(whole, "WaveSurfer fetched the file to decode it").toBe(0);
+  });
+});
+
+test.describe("coming back to the app", () => {
+  const PROJECTS = "/data/user/0/app.edytlab.android/projects";
+  const project = `${PROJECTS}/der-kommissar`;
+  const recent = [
+    { path: project, name: "Der Kommissar", last_opened_at: "2026-11-15T21:47:00Z" },
+    { path: `${PROJECTS}/demo`, name: "Demo", last_opened_at: "2026-10-01T10:00:00Z" },
+  ];
+
+  test("the project that was open last is opened again at launch", async ({ app }) => {
+    await app.boot({
+      ...ready(),
+      list_recent_projects: ok(recent),
+      open_project: ok({ path: project, head: null }),
+    });
+    // The newest of the recents, once, by the command a tap on its row sends.
+    await expect.poll(() => app.requestsFor("open_project")).toEqual([{ path: project }]);
+  });
+
+  test("with no project yet, nothing is opened", async ({ app }) => {
+    await app.boot(ready());
+    await expect(app.page.getByTestId("mobile-header")).toBeVisible();
+    await app.settle();
+    expect(await app.requestsFor("open_project")).toEqual([]);
+  });
+
+  test("the project's chat is shown again, and what is added is saved with it", async ({ app }, info) => {
+    await app.boot({
+      ...ready(),
+      load_chat_log: ok({
+        project,
+        entries: [
+          { kind: "message", id: "e1", role: "user", text: "separate this into stems" },
+          { kind: "tool", id: "call_1", name: "separate_stems", status: "error" },
+          { kind: "tool", id: "call_2", name: "transcribe", status: "running" },
+          { kind: "message", id: "e2", role: "assistant", text: "The stem model is not downloaded yet." },
+          // Not an entry this build knows: left out, and the rest still show.
+          { kind: "hologram", id: "e3" },
+        ],
+      }),
+      send_message: deferred("send"),
+    });
+    const page = app.page;
+    if (info.project.name === "phone") await page.getByTestId("mobile-tab-chat").tap();
+
+    const bubbles = page.getByTestId("message-bubble");
+    await expect(bubbles).toHaveCount(2);
+    await expect(bubbles.nth(0)).toContainText("separate this into stems");
+    await expect(bubbles.nth(1)).toContainText("The stem model is not downloaded yet.");
+    const badges = page.getByTestId("tool-badge");
+    await expect(badges).toHaveCount(2);
+    await expect(badges.nth(0)).toHaveAttribute("data-status", "error");
+    // It was running when the app stopped: all that is known is that it
+    // did not finish where anyone could see.
+    await expect(badges.nth(1)).toHaveAttribute("data-status", "not_run");
+
+    const box = page.getByTestId("chat-form").locator("textarea");
+    await box.fill("the model is there now, try again");
+    await box.press("Enter");
+    await expect.poll(() => app.requestsFor("send_message")).toHaveLength(1);
+
+    // Saved for the project the chat was read from, with the new message
+    // at the end of the old ones.
+    await expect
+      .poll(async () => {
+        const saves = (await app.requestsFor("save_chat_log")) as {
+          project: string;
+          entries: { kind: string; text?: string }[];
+        }[];
+        const last = saves[saves.length - 1];
+        return last ? [last.project, last.entries.length, last.entries[last.entries.length - 1].text] : null;
+      })
+      .toEqual([project, 5, "the model is there now, try again"]);
+    await app.release("send", null);
+  });
+});
+
+test.describe("the first screen on a phone", () => {
+  test("its buttons fit the screen, and it names no key", async ({ app }, info) => {
+    await app.boot(ready());
+    const page = app.page;
+    if (info.project.name === "phone") await page.getByTestId("mobile-tab-timeline").tap();
+    const screen = page.getByTestId("empty-state");
+    await expect(screen).toBeVisible();
+
+    // Every button is inside the screen: a row that ran off the side put
+    // "Open Audio" where no thumb could reach it.
+    const width = await page.evaluate(() => window.innerWidth);
+    for (const id of [
+      "empty-state-new-project-button",
+      "empty-state-open-project-button",
+      "empty-state-templates-button",
+      "empty-state-open-button",
+    ]) {
+      const box = await page.getByTestId(id).boundingBox();
+      if (!box) throw new Error(`${id} has no box`);
+      expect(box.x, id).toBeGreaterThanOrEqual(0);
+      expect(box.x + box.width, id).toBeLessThanOrEqual(width);
+    }
+    await expect(screen).not.toContainText("Ctrl");
+    await expect(screen).not.toContainText("or press");
+    await expect(screen).not.toContainText("Drop");
+    await expect(page.getByTestId("empty-state-open-button")).toHaveText("Import audio");
+  });
+
+  test("turned sideways, the whole screen can still be reached", async ({ app }, info) => {
+    test.skip(info.project.name !== "phone", "a tablet is tall enough either way");
+    await app.boot(ready());
+    const page = app.page;
+    // A phone on its side: wide and very short.
+    await page.setViewportSize({ width: 915, height: 412 });
+    await page.getByTestId("mobile-tab-timeline").tap();
+    const screen = page.getByTestId("empty-state");
+    await expect(screen).toBeVisible();
+
+    // Taller than its pane, so it scrolls, and the scroll reaches both ends:
+    // the name at the top and the examples at the bottom.
+    const fits = await screen.evaluate((el) => ({
+      scrolls: el.scrollHeight > el.clientHeight,
+      top: el.getBoundingClientRect().top,
+    }));
+    expect(fits.scrolls).toBe(true);
+    await screen.evaluate((el) => el.scrollTo(0, 0));
+    const title = await screen.locator("h1").boundingBox();
+    expect(title && title.y >= fits.top).toBe(true);
+    await screen.evaluate((el) => el.scrollTo(0, el.scrollHeight));
+    await expect(screen.getByText("normalize to -1 dBFS")).toBeInViewport();
   });
 });

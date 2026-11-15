@@ -349,6 +349,14 @@ The waveform of one of the session's audio files as peaks: { duration_sec, peaks
 
 Android only in effect. Make sure the app may use the microphone, showing Android's permission dialog if the person has not been asked. Resolves with whether recording may start. On a desktop it resolves true and asks nothing, since the operating system asks when the device is opened.
 
+### `loadChatLog() → ChatLog`
+
+Android only in effect. The chat pane's entries saved with the open project, as { project, entries }: the project's folder and the entries, oldest first. The Android app reads it when a project opens, so the chat is still there after the system has stopped the app. On a desktop, and for a project with nothing saved, entries is empty.
+
+### `saveChatLog(project: string, entries: unknown[]) → boolean`
+
+Android only in effect. Save the chat pane's entries with project, the folder loadChatLog named: the newest 400 are kept. Resolves false, with nothing written, when another project has been opened since, and on a desktop.
+
 ### `leaveApp() → void`
 
 Android only. Put the app behind the launcher without ending it, as Back does at the top of an Android app. A turn or a download that is running goes on.

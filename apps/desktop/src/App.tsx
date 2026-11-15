@@ -118,7 +118,7 @@ import { type ViewToApply, viewToApply, viewToSave } from "./lib/viewState";
 import { readSavedTrail } from "./lib/headTrail";
 
 import type { LeftView } from "./lib/views";
-import { useFormFactor } from "./lib/platform";
+import { isAndroid, useFormFactor } from "./lib/platform";
 import { useBackButton } from "./hooks/useBackButton";
 import { pickAudioUris } from "./lib/file-open";
 import {
@@ -1288,6 +1288,15 @@ function AppSession() {
     }
   }, []);
 
+  // The Android app comes back to the project that was open last. Android
+  // stops an app that is out of sight, so a start there is usually a return
+  // from another app, part way through a job, and a start screen with the
+  // project one tap away read as the work being gone. Once per launch, to
+  // the newest of the recents, by the same path a tap on its row takes.
+  const openRecentRef = useRef(handleOpenRecent);
+  openRecentRef.current = handleOpenRecent;
+  const resumedRef = useRef(false);
+
   // Load the recents list once at startup. A failure here is not worth
   // an error banner — the list is a convenience, and the Open button
   // still works without it.
@@ -1295,7 +1304,12 @@ function AppSession() {
     let cancelled = false;
     listRecentProjects()
       .then((list) => {
-        if (!cancelled) setRecents(list);
+        if (cancelled) return;
+        setRecents(list);
+        if (isAndroid() && !resumedRef.current && list.length > 0) {
+          resumedRef.current = true;
+          void openRecentRef.current(list[0].path);
+        }
       })
       .catch(() => undefined);
     return () => {
@@ -2192,6 +2206,7 @@ function AppSession() {
           }`}
         >
           <Chat ref={chatRef} 
+            projectKey={projectPath}
             providerEpoch={providerEpoch}
             rendering={rendering}
             onRequestRenderPreview={handleRenderPreview}

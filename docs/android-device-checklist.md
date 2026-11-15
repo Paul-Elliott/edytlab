@@ -43,12 +43,19 @@ Install: copy the APK to the device, open it, and allow "install unknown apps" f
 - [ ] Menu, **Projects**: create a project by name, import something, then switch back to the first project. Each keeps its own audio.
 - [ ] Duplicate a project, and delete one you do not need.
 
-## 7. Transcription (optional)
+## 7. Coming back to the app
+
+- [ ] With a project open and a few messages in the chat, swipe the app away from the recent apps list, then open it again. It opens on the same project, with its tracks, and the chat shows the earlier messages.
+- [ ] Type "continue" or ask about something said before. The assistant answers as someone who remembers the conversation.
+- [ ] Switch to another project and back. Each project shows its own chat.
+- [ ] The first screen (Timeline tab, no audio) fits upright: four buttons, none off the side, and no "Ctrl+O".
+
+## 8. Transcription (optional)
 
 - [ ] Download the **Speech model** (about 139 MB), ask "transcribe track 1", and open the Transcript tab.
 - [ ] Tap a word, tap another, tap **Cut**. The audio under those words is removed.
 
-## 8. Recording (least tested)
+## 9. Recording (least tested)
 
 - [ ] Tap the red Record button. Android asks for the microphone once. Speak, then stop: a new track appears.
 - [ ] Recording stops if you leave the app. Latency calibration and punch-in are not offered in the Android header.

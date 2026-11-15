@@ -19,6 +19,32 @@ impl Conversation {
         self.messages.clear();
     }
 
+    /// The history as it can be kept on disk and taken back later: every
+    /// message, without the thinking, which is bound to the request it was
+    /// made in and is dropped at the start of each turn anyway.
+    pub(crate) fn to_keep(&self) -> Vec<Message> {
+        let mut kept = self.messages.clone();
+        for message in &mut kept {
+            message.content.retain(|block| !is_thinking(block));
+        }
+        kept.retain(|message| !message.content.is_empty());
+        kept
+    }
+
+    /// Replace the history with one read back from disk, and say how many
+    /// messages were taken.
+    ///
+    /// The file is not trusted to be a history this module would have made:
+    /// an app that was killed mid-turn, an older build, or a damaged file
+    /// can all leave something a provider answers with a 400, and that
+    /// would fail every turn from then on. So only what is certainly
+    /// replayable is kept ([`replayable`]), and no more of it than
+    /// [`RESTORE_BUDGET_BYTES`].
+    pub(crate) fn restore(&mut self, messages: Vec<Message>) -> usize {
+        self.messages = within_budget(replayable(messages), RESTORE_BUDGET_BYTES);
+        self.messages.len()
+    }
+
     /// Join a trailing user message, including one holding tool results.
     pub(crate) fn push_user_text(&mut self, text: String) {
         if let Some(last) = self.messages.last_mut() {
@@ -100,6 +126,101 @@ impl Conversation {
             answers: Vec::new(),
         }
     }
+}
+
+/// The most of a saved history that is taken back, as serialised bytes
+/// (about a quarter as many tokens). A project's chat is kept for as long
+/// as the project, so without a limit every turn would carry all of it, and
+/// one day it would not fit the model at all. The oldest turns go first.
+pub(crate) const RESTORE_BUDGET_BYTES: usize = 200 * 1024;
+
+/// The longest start of `messages` that is a history the loop could have
+/// left at the end of a finished turn:
+///
+/// * it starts with the user and the two sides alternate;
+/// * no message is empty, and none holds thinking;
+/// * every tool call is answered, in order, by the message after it, and
+///   nothing else claims to be a result;
+/// * it ends on a reply of the assistant's that calls no tool.
+///
+/// Whatever follows the last such reply is dropped: a turn that was cut off
+/// part way is not replayed.
+fn replayable(messages: Vec<Message>) -> Vec<Message> {
+    let mut kept: Vec<Message> = Vec::new();
+    let mut complete = 0;
+    let mut open_calls: Vec<String> = Vec::new();
+    for mut message in messages {
+        message.content.retain(|block| !is_thinking(block));
+        let expected = if kept.len().is_multiple_of(2) {
+            Role::User
+        } else {
+            Role::Assistant
+        };
+        if message.role != expected || message.content.is_empty() {
+            break;
+        }
+        let results: Vec<&str> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolResult { tool_use_id, .. } => Some(tool_use_id.as_str()),
+                _ => None,
+            })
+            .collect();
+        let calls: Vec<String> = message
+            .content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .collect();
+        match message.role {
+            Role::User => {
+                if !calls.is_empty() || results != open_calls {
+                    break;
+                }
+                open_calls.clear();
+                kept.push(message);
+            }
+            Role::Assistant => {
+                if !results.is_empty() {
+                    break;
+                }
+                open_calls = calls;
+                kept.push(message);
+                if open_calls.is_empty() {
+                    complete = kept.len();
+                }
+            }
+        }
+    }
+    kept.truncate(complete);
+    kept
+}
+
+/// `messages` without its oldest turns, until what is left serialises to
+/// `budget` bytes or less. A turn starts at a user message that answers no
+/// tool call, so the cut never parts a call from its result. The newest
+/// turn is kept whatever its size: it is what "continue" refers to.
+fn within_budget(mut messages: Vec<Message>, budget: usize) -> Vec<Message> {
+    let size = |m: &Message| serde_json::to_vec(m).map_or(0, |bytes| bytes.len());
+    let mut total: usize = messages.iter().map(size).sum();
+    while total > budget {
+        let next_turn = messages.iter().enumerate().skip(1).find_map(|(i, m)| {
+            let starts_a_turn = m.role == Role::User
+                && !m
+                    .content
+                    .iter()
+                    .any(|block| matches!(block, ContentBlock::ToolResult { .. }));
+            starts_a_turn.then_some(i)
+        });
+        let Some(cut) = next_turn else {
+            break;
+        };
+        total -= messages.drain(..cut).map(|m| size(&m)).sum::<usize>();
+    }
+    messages
 }
 
 fn is_thinking(block: &ContentBlock) -> bool {
@@ -594,6 +715,199 @@ mod tests {
         }
         assert_eq!(conversation.messages().len(), 2);
         assert_eq!(conversation.messages()[1].role, Role::Assistant);
+    }
+
+    fn user(text: &str) -> Message {
+        Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    fn assistant(text: &str) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: vec![ContentBlock::Text { text: text.into() }],
+        }
+    }
+
+    fn calling(ids: &[&str]) -> Message {
+        Message {
+            role: Role::Assistant,
+            content: ids
+                .iter()
+                .map(|id| ContentBlock::ToolUse {
+                    id: (*id).into(),
+                    name: "list_session".into(),
+                    input: json!({}),
+                })
+                .collect(),
+        }
+    }
+
+    fn results(ids: &[&str]) -> Message {
+        Message {
+            role: Role::User,
+            content: ids
+                .iter()
+                .map(|id| ContentBlock::ToolResult {
+                    tool_use_id: (*id).into(),
+                    content: "ok".into(),
+                    is_error: None,
+                })
+                .collect(),
+        }
+    }
+
+    /// A finished history comes back whole, and a turn can follow it.
+    #[test]
+    fn a_saved_history_is_taken_back_and_a_turn_follows_it() {
+        let saved = vec![
+            user("separate the stems"),
+            calling(&["a", "b"]),
+            results(&["a", "b"]),
+            assistant("done"),
+        ];
+        let mut conversation = Conversation::default();
+        assert_eq!(conversation.restore(saved.clone()), 4);
+        assert_eq!(shape_of(conversation.messages()), shape_of(&saved));
+
+        conversation.push_user_text("continue".into());
+        assert_eq!(conversation.messages().len(), 5);
+        assert_eq!(conversation.messages()[4].role, Role::User);
+    }
+
+    /// What is kept for the disk has no thinking, and reads back the same.
+    #[test]
+    fn what_is_kept_has_no_thinking_and_survives_the_disk() {
+        let mut conversation = Conversation::default();
+        conversation.push_user_text("hello".into());
+        conversation.store_assistant(vec![
+            thinking("sig"),
+            ContentBlock::RedactedThinking { data: "x".into() },
+            ContentBlock::Text { text: "hi".into() },
+        ]);
+        let kept = conversation.to_keep();
+        assert_eq!(shape_of(&kept), ["User:text", "Assistant:text"]);
+
+        let text = serde_json::to_string(&kept).unwrap();
+        let read: Vec<Message> = serde_json::from_str(&text).unwrap();
+        let mut again = Conversation::default();
+        assert_eq!(again.restore(read), 2);
+        assert_eq!(shape_of(again.messages()), shape_of(&kept));
+    }
+
+    /// A turn cut off part way is not replayed: the history ends at the
+    /// last reply that called nothing.
+    #[test]
+    fn a_turn_that_was_cut_off_is_dropped() {
+        for (name, tail) in [
+            ("a message nobody answered", vec![user("and now?")]),
+            ("calls with no results", vec![user("go"), calling(&["c"])]),
+            (
+                "results with no reply",
+                vec![user("go"), calling(&["c"]), results(&["c"])],
+            ),
+        ] {
+            let mut saved = vec![user("hello"), assistant("hi")];
+            saved.extend(tail);
+            let mut conversation = Conversation::default();
+            assert_eq!(conversation.restore(saved), 2, "{name}");
+        }
+    }
+
+    /// Anything a provider would refuse ends the history before it.
+    #[test]
+    fn a_history_a_provider_would_refuse_is_cut_before_the_fault() {
+        let good = [user("hello"), assistant("hi")];
+        let faults: Vec<(&str, Vec<Message>)> = vec![
+            ("starts with the assistant", vec![assistant("hi")]),
+            ("two user messages in a row", vec![user("a"), user("b")]),
+            (
+                "a result for a call nobody made",
+                vec![user("go"), assistant("ok"), results(&["ghost"])],
+            ),
+            (
+                "results in the wrong order",
+                vec![user("go"), calling(&["a", "b"]), results(&["b", "a"])],
+            ),
+            (
+                "a call left without its result",
+                vec![user("go"), calling(&["a", "b"]), results(&["a"])],
+            ),
+            (
+                "an empty message",
+                vec![
+                    user("go"),
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![],
+                    },
+                ],
+            ),
+            (
+                "a reply that is only thinking",
+                vec![
+                    user("go"),
+                    Message {
+                        role: Role::Assistant,
+                        content: vec![thinking("sig")],
+                    },
+                ],
+            ),
+        ];
+        for (name, fault) in faults {
+            // Alone, nothing of it is kept.
+            let mut alone = Conversation::default();
+            let kept_alone = alone.restore(fault.clone());
+            // After a good exchange, the good exchange is all that is kept,
+            // unless the fault itself begins with one.
+            let mut after = Conversation::default();
+            let mut saved = good.to_vec();
+            saved.extend(fault);
+            let kept_after = after.restore(saved);
+            assert_eq!(kept_after, 2 + kept_alone, "{name}");
+            assert!(kept_alone <= 2, "{name}");
+            let last = after.messages().last().expect("the good exchange");
+            assert_eq!(last.role, Role::Assistant, "{name}");
+        }
+    }
+
+    /// Over the budget, the oldest turns go, whole, and the newest stays.
+    #[test]
+    fn the_oldest_turns_go_first_when_the_history_is_over_its_budget() {
+        let turn = |n: usize| {
+            vec![
+                user(&format!("request {n}")),
+                calling(&["t"]),
+                results(&["t"]),
+                assistant(&format!("answer {n} {}", "x".repeat(400))),
+            ]
+        };
+        let all: Vec<Message> = (0..10).flat_map(turn).collect();
+        let whole: usize = all
+            .iter()
+            .map(|m| serde_json::to_vec(m).unwrap().len())
+            .sum();
+
+        let kept = within_budget(all.clone(), whole / 3);
+        assert!(kept.len() < all.len() && !kept.is_empty());
+        assert_eq!(kept.len() % 4, 0, "whole turns only");
+        let first = &kept[0];
+        assert_eq!(first.role, Role::User);
+        assert!(
+            matches!(&first.content[0], ContentBlock::Text { text } if text.starts_with("request"))
+        );
+        assert!(matches!(
+            &kept.last().unwrap().content[0],
+            ContentBlock::Text { text } if text.starts_with("answer 9")
+        ));
+        // What is left is still a history that would be taken back whole.
+        assert_eq!(replayable(kept.clone()).len(), kept.len());
+
+        // Under the budget nothing goes, and one turn too big for it stays.
+        assert_eq!(within_budget(all.clone(), whole).len(), all.len());
+        assert_eq!(within_budget(turn(0), 10).len(), 4);
     }
 
     #[test]

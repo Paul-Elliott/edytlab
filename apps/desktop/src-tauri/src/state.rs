@@ -55,6 +55,12 @@ pub struct AppState {
     pub engine: Arc<Mutex<Engine>>,
     /// Currently-open project directory, if any.
     pub project_dir: Arc<Mutex<Option<PathBuf>>>,
+    /// The project the agent in [`AppState::agent`] was built for, where
+    /// conversations are kept (`chat_log.rs`: the Android app). Written only
+    /// with the agent's mutex held, so it names the folder of whatever
+    /// agent is in the slot, which after the window has moved on is not
+    /// `project_dir`.
+    pub agent_chat_dir: Arc<Mutex<Option<PathBuf>>>,
     /// In-memory cache of the API key for the *currently active*
     /// provider. We re-read from the OS keychain on demand; this exists
     /// so commands that need the key (agent construction) do not have to
@@ -219,6 +225,7 @@ impl AppState {
             store: Arc::new(Mutex::new(None)),
             engine: Arc::new(Mutex::new(Engine::new())),
             project_dir: Arc::new(Mutex::new(None)),
+            agent_chat_dir: Arc::new(Mutex::new(None)),
             api_key: Arc::new(Mutex::new(None)),
             keychain_read_error: Arc::new(Mutex::new(None)),
             keychain_refused: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -707,6 +714,19 @@ impl AppState {
     /// both, so a reader that sees the new store sees the new directory
     /// too. The order is the `store` slot, then the `project_dir` slot; no
     /// code takes them the other way round.
+    /// Note the project the agent in the slot was built for. See
+    /// [`AppState::agent_chat_dir`].
+    pub fn note_agent_chat_dir(&self, dir: Option<PathBuf>) {
+        if let Ok(mut slot) = self.agent_chat_dir.lock() {
+            *slot = dir;
+        }
+    }
+
+    /// The project the agent in the slot was built for, if one was noted.
+    pub fn agent_chat_dir(&self) -> Option<PathBuf> {
+        self.agent_chat_dir.lock().ok().and_then(|dir| dir.clone())
+    }
+
     pub fn set_open_project(&self, store: LiveStore, dir: PathBuf) {
         // A crash report never names the folder (#958).
         self.crash_reports.redact_path(&dir, "<project>");
